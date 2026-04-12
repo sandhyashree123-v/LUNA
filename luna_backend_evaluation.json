@@ -1,0 +1,33 @@
+{
+  "overall_accuracy_percent": 100.0,
+  "total_cases": 30,
+  "correct_cases": 30,
+  "per_class_accuracy_percent": {
+    "anxious": 100.0,
+    "hopeful": 100.0,
+    "neutral": 100.0,
+    "overwhelmed": 100.0,
+    "sad": 100.0,
+    "tired": 100.0
+  },
+  "timings_ms": {
+    "detect_mood_avg": 0.0023,
+    "detect_mood_min": 0.0021,
+    "detect_mood_max": 0.0105,
+    "build_system_prompt_avg": 273.6428,
+    "build_system_prompt_min": 81.0001,
+    "build_system_prompt_max": 784.5418,
+    "normalize_language_choice_avg": 0.0006,
+    "normalize_language_choice_min": 0.0005,
+    "normalize_language_choice_max": 0.0216,
+    "detect_smalltalk_intent_avg": 0.0059,
+    "detect_smalltalk_intent_min": 0.003,
+    "detect_smalltalk_intent_max": 0.7586
+  },
+  "sample_result": {
+    "input": "I feel stressed and nervous and I keep overthinking everything tonight.",
+    "predicted_emotion": "anxious",
+    "wave_label": "528 Hz breath field ? easing the mind back into clarity"
+  },
+  "mismatches": []
+}

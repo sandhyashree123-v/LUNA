@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+requests
+pydantic
+streamlit
+playsound==1.2.2
+python-multipart

@@ -1,0 +1,54 @@
+LUNA: A MULTIMODAL EMOTIONAL COMPANION SYSTEM WITH VOICE, SONOTHERAPY AND ANCIENT WISDOM
+
+Project Reference No.: 49S_BE_XXXX
+
+College     : [Name of the College / Institution / University]
+Branch      : [Department Name]
+Guide(s)    : [Guide 1 Name]
+             [Guide 2 Name]
+Student(s)  : [Student 1 Name]
+             [Student 2 Name]
+             [Student 3 Name]
+             [Student 4 Name]
+
+Keywords:
+Emotional companion, multimodal chatbot, speech recognition, text-to-speech, mood detection, sonotherapy.
+
+Introduction:
+Mental well-being support systems are becoming increasingly important for students and young adults who often need a calm, always-available digital companion for reflection, reassurance, and guided emotional release. This project presents LUNA, a multimodal emotional companion system designed to provide supportive conversational interaction through text, voice, mood-aware background audio, and an expressive visual interface. The system combines a React-based frontend, a FastAPI backend, speech-to-text and text-to-speech services, multilingual interaction, and a memory-supported conversational workflow. LUNA analyzes the user’s input to estimate emotional state, generates a warm and context-aware response, and augments the experience with suitable calming audio tracks and an animated 3D avatar. In addition, the system offers an ancient wisdom module that presents concise reflective messages and stores whisper history for continuity. The overall aim is to create a safe, engaging, and accessible non-clinical emotional support interface that feels more human, immersive, and responsive than a standard chatbot.
+
+Figure 1: LUNA system architecture showing multimodal user input, backend intelligence, voice pipeline, and emotional response interface.
+
+Literature Survey:
+1. Early conversational systems such as ELIZA demonstrated that natural language interfaces can create a sense of human-like interaction even with limited intelligence.
+2. Conversational mental health systems such as Woebot showed the potential of chat-based digital support for reducing distress in young users through accessible and continuous interaction.
+3. Modern transformer-based language models improved contextual response generation and enabled more natural, coherent dialogue in intelligent chat systems.
+4. Speech-based interfaces from cloud platforms made multilingual speech recognition and expressive text-to-speech practical for real-time applications.
+5. Based on these developments, LUNA combines conversational AI, speech technologies, mood-aware audio feedback, and immersive visual presentation into a unified emotional companion platform.
+
+Objectives:
+1. To design and develop a multimodal emotional companion that supports text, voice, and visual interaction.
+2. To detect the user’s mood from conversational input and adapt responses and audio ambience accordingly.
+3. To provide multilingual speech recognition and natural voice output for a more inclusive user experience.
+4. To create an immersive interface with memory, wisdom prompts, and a 3D avatar to improve engagement and emotional comfort.
+
+Methodology:
+The proposed system is implemented as a full-stack application. The frontend is developed using React and Vite, with React Three Fiber and Drei used to render an animated 3D avatar. The backend is built with FastAPI and exposes endpoints for chat, speech token generation, speech-to-text, text-to-speech, wisdom retrieval, and voice selection. User messages are first processed to identify a probable emotional state such as sadness, anxiety, overwhelm, tiredness, hopefulness, or neutral mood. The backend then constructs a guided conversational prompt and obtains an emotionally aligned reply using a transformer-based language model through the Hugging Face router. For voice interaction, Azure Speech services are used for multilingual speech recognition and neural voice synthesis, with fallback support for ElevenLabs text-to-speech. The frontend plays mood-specific sonotherapy tracks and updates the 3D interface based on the current emotional state. Conversation snippets, whisper history, and user preferences are stored locally or in lightweight files for continuity and personalization.
+
+Result and Conclusion:
+The developed prototype successfully demonstrates an interactive emotional companion system that combines chat, voice, mood detection, multilingual support, ancient wisdom prompts, sonotherapy, and an animated avatar within a single interface. The system provides a more immersive and emotionally aware experience than a conventional text-only chatbot. It is suitable as a supportive self-reflection and comfort tool for everyday use, especially for users seeking a gentle and accessible digital companion. In conclusion, LUNA shows that combining conversational AI with voice technologies, adaptive audio ambience, and expressive interface design can improve engagement and perceived emotional presence in non-clinical wellness applications.
+
+References:
+[1] H. Li, R. Zhang, Y.-C. Lee, R. E. Kraut, and D. C. Mohr, "Systematic review and meta-analysis of AI-based conversational agents for promoting mental health and well-being," npj Digital Medicine, vol. 6, art. no. 236, 2023, doi: 10.1038/s41746-023-00979-5.
+[2] M. Rollwage, J. Habicht, K. Juechems, B. Carrington, S. Viswanathan, M. Stylianou, T. U. Hauser, and R. Harper, "Using Conversational AI to Facilitate Mental Health Assessments and Improve Clinical Efficiency Within Psychotherapy Services: Real-World Observational Study," JMIR AI, vol. 2, e44358, 2023, doi: 10.2196/44358.
+[3] H. Barakat, O. Turk, and C. Demiroglu, "Deep learning-based expressive speech synthesis: a systematic review of approaches, challenges, and resources," EURASIP Journal on Audio, Speech, and Music Processing, vol. 2024, art. no. 11, 2024, doi: 10.1186/s13636-024-00329-7.
+[4] C. Barhoumi and Y. BenAyed, "Real-time speech emotion recognition using deep learning and data augmentation," Artificial Intelligence Review, vol. 58, art. no. 49, 2025, doi: 10.1007/s10462-024-11065-x.
+[5] G. Alhussein, I. Ziogas, S. Saleem, S. F. Ochoa, J. M. Jose, E. L. Murnane, and I. Vlahavas, "Speech emotion recognition in conversations using artificial intelligence: a systematic review and meta-analysis," Artificial Intelligence Review, vol. 58, art. no. 198, 2025, doi: 10.1007/s10462-025-11197-8.
+
+Future Scope:
+The future scope of this project includes:
+1. Integrating stronger sentiment and emotion classification models instead of keyword-based mood detection.
+2. Adding secure user authentication, encrypted storage, and privacy-preserving data management for real-world deployment.
+3. Extending personalization through long-term memory, adaptive recommendations, and usage analytics.
+4. Incorporating safety layers such as crisis detection, escalation guidance, and human support referral mechanisms.
+5. Expanding the platform to mobile devices and wearable integrations for continuous wellness assistance.
