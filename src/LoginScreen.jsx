@@ -16,7 +16,7 @@ function readSavedProfile() {
   }
 }
 
-export default function LoginScreen({ onUnlock }) {
+export default function LoginScreen({ onUnlock, onProfileReset, embedded = false }) {
   const [savedProfile, setSavedProfile] = useState(() => readSavedProfile());
   const [name, setName] = useState(() => readSavedProfile()?.name || "");
   const [password, setPassword] = useState("");
@@ -56,6 +56,7 @@ export default function LoginScreen({ onUnlock }) {
     setConfirmPassword("");
     setError("");
     setAttemptsLeft(3);
+    onProfileReset?.();
   };
 
   const handleSubmit = (event) => {
@@ -107,7 +108,9 @@ export default function LoginScreen({ onUnlock }) {
   };
 
   return (
-    <div className={`login-root ${isLeaving ? "login-exit" : ""}`}>
+    <div
+      className={`login-root ${embedded ? "login-root-embedded" : "login-root-fullscreen"} ${isLeaving ? "login-exit" : ""}`}
+    >
       <video autoPlay loop muted playsInline className="nebula-bg">
         <source src={nebulaVideo} type="video/mp4" />
       </video>

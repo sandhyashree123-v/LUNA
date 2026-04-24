@@ -1,7 +1,9 @@
 fastapi
 uvicorn
+gunicorn
 requests
 pydantic
 streamlit
 playsound==1.2.2
 python-multipart
+azure-storage-blob

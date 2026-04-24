@@ -1,58 +1,40 @@
 # InnerVoice Jelly Backend
 
-Primary backend for the current LUNA app, plus the older Streamlit prototype.
+FastAPI backend for LUNA.
 
-## First Time Setup
-
-Install dependencies:
+## Local Run
 
 ```powershell
-.\install-backend.cmd
+python -m pip install -r requirements.txt
+python -m uvicorn backend:app --reload --host 127.0.0.1 --port 8000
 ```
 
-The backend auto-loads local values from `.env`.
+## Key Runtime Behavior
 
-## Run
+- serves the LUNA API
+- can serve the built frontend when `dist/` is present
+- exposes `GET /health`
+- stores diary data in Azure Blob Storage when configured
 
-FastAPI backend for the React app:
+## Azure Diary Storage
 
-```powershell
-.\run-backend.cmd
+Set these env vars to make diary entries persistent across restarts:
+
+```env
+AZURE_STORAGE_CONNECTION_STRING=...
+AZURE_STORAGE_CONTAINER=luna-data
 ```
 
-This starts the API on `http://127.0.0.1:8000`.
+Diary blobs are stored per user as:
 
-Optional older Streamlit prototype:
-
-```powershell
-.\run-streamlit-prototype.cmd
+```text
+diary/<normalized-user-name>.json
 ```
 
-## Files
+If Azure storage is not configured, the backend falls back to local files.
 
-- `backend.py`: active FastAPI backend used by `luna-ui`
-- `app.py`: older Streamlit prototype
-- `.env`: local runtime secrets and credentials
-- `.env.example`: env variable template
-- `luna_memory.txt`: active long-term memory for LUNA
-- `mood_data.json`: saved conversation diary
+## Important Files
 
-## Required Env Vars
-
-- `HF_TOKEN`
-- `ELEVENLABS_API_KEY`
-- `ELEVENLABS_VOICE_ID`
-- `LUNA_USERNAME`
-- `LUNA_PASSWORD`
-
-## Frontend Pairing
-
-The matching React frontend lives at:
-
-`C:\Users\sandh\luna-ui`
-
-Run it with:
-
-```powershell
-.\run-frontend.cmd
-```
+- `backend.py`: active API
+- `.env.example`: backend env template
+- `requirements.txt`: Python dependencies

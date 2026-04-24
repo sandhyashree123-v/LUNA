@@ -1,0 +1,17 @@
+.git
+.gitignore
+node_modules
+dist
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.log
+.env
+InnerVoice_Jelly/.env
+InnerVoice_Jelly/__pycache__
+InnerVoice_Jelly/*.bak_codex
+tmp_luna_test.mp3
+tmp_luna_test.ogg
+tmp_luna_test.webm
+tempCodeRunnerFile.bat

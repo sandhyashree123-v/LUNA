@@ -1,26 +1,69 @@
 ﻿from __future__ import annotations
 
+from collections import Counter
+import importlib
 import json
+import math
 import os
 import random
 import re
+import shutil
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional, cast
 
 import requests
 from fastapi import FastAPI, File, Query, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
+
+try:
+    BlobServiceClient = importlib.import_module("azure.storage.blob").BlobServiceClient
+except ImportError:
+    BlobServiceClient = None
 
 
 BASE_DIR = Path(__file__).resolve().parent
-ENV_FILE = BASE_DIR / ".env"
-DIARY_FILE = BASE_DIR / "mood_data.json"
-MEM_FILE = BASE_DIR / "luna_memory.txt"
-WISDOM_CACHE_FILE = BASE_DIR / "wisdom_cache.json"
-WISDOM_USAGE_FILE = BASE_DIR / "wisdom_usage.json"
+REPO_ENV_FILE = BASE_DIR / ".env"
+RUNTIME_DATA_DIR = Path(os.getenv("LUNA_DATA_DIR", str(BASE_DIR))).resolve()
+RUNTIME_DATA_DIR.mkdir(parents=True, exist_ok=True)
+ENV_FILE = Path(
+    os.getenv(
+        "LUNA_ENV_FILE",
+        str((RUNTIME_DATA_DIR / ".env") if RUNTIME_DATA_DIR != BASE_DIR else REPO_ENV_FILE),
+    )
+).resolve()
+FRONTEND_DIST_DIR = Path(os.getenv("LUNA_STATIC_DIR", str(BASE_DIR.parent / "dist"))).resolve()
+FRONTEND_INDEX_FILE = FRONTEND_DIST_DIR / "index.html"
+
+
+def runtime_file(name: str) -> Path:
+    target = RUNTIME_DATA_DIR / name
+    source = BASE_DIR / name
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    if not target.exists() and source.exists() and source != target:
+        try:
+            shutil.copyfile(source, target)
+        except Exception:
+            pass
+
+    return target
+
+
+DIARY_FILE = runtime_file("mood_data.json")
+MEM_FILE = runtime_file("luna_memory.txt")
+STATE_FILE = runtime_file("luna_state.json")
+SOUL_MAP_FILE = runtime_file("luna_soul_map.json")
+USER_MEMORY_DIR = RUNTIME_DATA_DIR / "luna_user_memory"
+WISDOM_CACHE_FILE = runtime_file("wisdom_cache.json")
+WISDOM_USAGE_FILE = runtime_file("wisdom_usage.json")
+
+SoulCounter = dict[str, int]
+SoulMap = dict[str, object]
+SoulMapStore = dict[str, SoulMap]
 
 
 def load_local_env(env_path: Path) -> None:
@@ -39,7 +82,15 @@ def load_local_env(env_path: Path) -> None:
             os.environ[key] = value
 
 
-load_local_env(ENV_FILE)
+load_local_env(REPO_ENV_FILE)
+if ENV_FILE != REPO_ENV_FILE:
+    load_local_env(ENV_FILE)
+
+
+def parse_csv_env(name: str, default: list[str]) -> list[str]:
+    raw = os.getenv(name, "")
+    values = [item.strip() for item in raw.split(",") if item.strip()]
+    return values or default
 
 AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY", "")
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT", "").rstrip("/")
@@ -55,6 +106,12 @@ AZURE_TRANSLATOR_ENDPOINT = os.getenv("AZURE_TRANSLATOR_ENDPOINT", "https://api.
 USE_AZURE_TRANSLATOR = os.getenv("USE_AZURE_TRANSLATOR", "true").strip().lower() in {"1", "true", "yes", "on"}
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "6ZZR4JY6rOriLSDtV54M")
+AZURE_STORAGE_CONNECTION_STRING = os.getenv("AZURE_STORAGE_CONNECTION_STRING", "")
+AZURE_STORAGE_CONTAINER = os.getenv("AZURE_STORAGE_CONTAINER", "luna-data")
+FRONTEND_ORIGINS = parse_csv_env(
+    "FRONTEND_ORIGINS",
+    ["http://localhost:5173", "http://127.0.0.1:5173"],
+)
 
 request_session = requests.Session()
 HF_API_URL = "https://router.huggingface.co/v1/chat/completions"
@@ -143,6 +200,13 @@ LANGUAGE_VOICE_MAP = {
     "te-IN": "te-IN-ShrutiNeural",
     "ta-IN": "ta-IN-PallaviNeural",
     "kn-IN": "kn-IN-SapnaNeural",
+}
+
+TARGET_SCRIPT_PATTERNS = {
+    "hi-IN": r"[\u0900-\u097F]",
+    "te-IN": r"[\u0C00-\u0C7F]",
+    "ta-IN": r"[\u0B80-\u0BFF]",
+    "kn-IN": r"[\u0C80-\u0CFF]",
 }
 
 
@@ -252,6 +316,20 @@ RESPONSE_ARCHETYPES = {
         ],
         "wisdom_bias": ["self", "awareness", "witness", "truth", "atma", "stillness", "clarity", "consciousness"],
     },
+    "awakening_healing": {
+        "label": "awakening healing",
+        "summary": "Give a stronger, more healing awakening reply that helps Sandy move toward a clearer mind, stronger inner state, and more aligned human connection.",
+        "wisdom_limit": 2,
+        "instructions": [
+            "Start with a deeply human recognition of why the current environment or inner state is draining.",
+            "Do not stay in soft empathy too long; turn toward strength, clarity, and awakened discernment fairly early.",
+            "Name how consciousness gets shaped by company, atmosphere, thought-pattern, and daily rhythm in plain language.",
+            "Make the reply feel healing, clarifying, and strengthening, not vague or dreamy.",
+            "Do not ask questions unless absolutely necessary. This mode should usually answer directly.",
+            "Let one strong ancient-wisdom line land in a way that feels memorable and human, not quoted or preachy.",
+        ],
+        "wisdom_bias": ["awareness", "discernment", "truth", "alignment", "discipline", "clarity", "consciousness", "strength"],
+    },
     "purpose_dharma": {
         "label": "purpose and dharma",
         "summary": "Help Sandy sense direction, meaning, and right alignment without becoming grand or preachy.",
@@ -289,6 +367,13 @@ GENERIC_REPLY_MARKERS = [
     "do not ask your heart to solve everything tonight",
     "some softer truer part",
     "this feeling is not proof",
+    "that makes sense",
+    "what kind of people feel right",
+    "which places or circles",
+    "lately?",
+    "wrong energy",
+    "if you want, i can",
+    "would you like me to",
     "you're not alone",
     "you are not alone",
     "let it be here",
@@ -332,6 +417,15 @@ RESPONSE_STYLE_EXAMPLES = {
             "That's enough to start finding your way back."
         ),
     },
+    "awakening_healing": {
+        "user": "I want to connect with more conscious people and stop feeling drained by the wrong environments.",
+        "assistant": (
+            "Yeah, that longing is real. After a point the wrong places don't just waste your time. They start thinning out your mind.\n\n"
+            "Ancient wisdom would say this very plainly: what you keep sitting inside starts shaping your consciousness. Company, atmosphere, repetition, even the emotional tone around you, all of it enters the mind.\n\n"
+            "So this is not only about finding higher people. It is about becoming harder to pull downward. A clearer inner life. Better discernment. Stronger boundaries. More honest daily choices.\n\n"
+            "When your inner state gets steadier, the right people stop looking rare. You start recognizing them faster."
+        ),
+    },
     "purpose_dharma": {
         "user": "I don't know what my real path is anymore.",
         "assistant": (
@@ -368,6 +462,12 @@ CURATED_ARCHETYPE_FALLBACKS = {
         "Don't force some big answer tonight. Just come back in small ways. One breath. One honest feeling. One quiet minute.\n\n"
         "You're not gone. You just need a gentle way back."
     ),
+    "awakening_healing": (
+        "Yeah, that kind of drain is real. Stay in the wrong spaces long enough and even your own mind stops feeling fully like yours.\n\n"
+        "Ancient wisdom would not reduce this to bad luck. It would say consciousness gets trained by what you keep living inside. People, atmosphere, habit, noise, all of it enters you.\n\n"
+        "So the shift is not only in finding better company. It is in becoming inwardly clearer, stronger, and less available to what keeps lowering you.\n\n"
+        "Protect your inner state hard enough, and the right people start becoming easier to find."
+    ),
     "purpose_dharma": (
         "Not knowing your path hurts, because it makes you question yourself too.\n\n"
         "Most times the path isn't gone. It's just buried under fear, pressure, and too much noise.\n\n"
@@ -379,6 +479,7 @@ CURATED_ARCHETYPE_FALLBACKS = {
 
 class ChatRequest(BaseModel):
     message: str
+    user_name: str = "Sandy"
     language: str = "en-IN"
     history: list[dict[str, str]] = []
 
@@ -388,6 +489,12 @@ class ChatResponse(BaseModel):
     mood: str = "neutral"
     wave_label: str = MOOD_WAVE_LABELS["neutral"]
     wisdom_used: list[str] = []
+    response_mode: str = "companion-first"
+    inner_state_summary: str = ""
+    support_focus: str = ""
+    awakening_focus: str = ""
+    growth_edge: str = ""
+    soul_map_summary: str = ""
 
 
 class TTSRequest(BaseModel):
@@ -412,10 +519,18 @@ class SpeechTokenResponse(BaseModel):
     region: str
 
 
+class DiaryStoryResponse(BaseModel):
+    title: str = ""
+    story: str = ""
+    date: str = ""
+    entry_count: int = 0
+    generated_at: str = ""
+
+
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=FRONTEND_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -648,6 +763,8 @@ def get_smalltalk_reply(user_text: str, language: str) -> Optional[str]:
     intent = detect_smalltalk_intent(user_text)
     if not intent:
         return None
+    if normalized_language != "en-IN":
+        return None
     reply = (SMALLTALK_REPLIES.get(normalized_language) or SMALLTALK_REPLIES['en-IN']).get(intent)
     return reply
 
@@ -801,6 +918,48 @@ def should_use_deep_response(user_text: str) -> bool:
     return any(marker in compact for marker in deep_markers)
 
 
+def should_give_awakening_guidance_now(user_text: str) -> bool:
+    compact = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9' ]+", " ", (user_text or "").lower())).strip()
+    if not compact:
+        return False
+
+    awakening_markers = [
+        "higher density", "higher vibration", "higher frequency", "conscious people", "aligned people",
+        "right people", "soul tribe", "enlightenment", "enlighten", "awakening", "consciousness",
+        "disconnected from myself", "come back to myself", "strong mind", "drained by the wrong",
+        "wrong environments", "wrong energy", "wrong people", "aligned life",
+    ]
+    return any(marker in compact for marker in awakening_markers)
+
+
+def detect_spiritual_query_topics(user_text: str) -> set[str]:
+    compact = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9' ]+", " ", (user_text or "").lower())).strip()
+    topics = set()
+
+    topic_markers = {
+        "enlightenment": ["enlightenment", "enlighten", "moksha", "liberation", "self realization", "self-realization"],
+        "higher_dimension": ["higher dimension", "higher dimensions", "other dimension", "travel dimensions", "universe"],
+        "yoga": ["yoga", "yogic", "asana", "ashtanga"],
+        "chakra": ["chakra", "chakras", "kundalini", "energy centre", "energy center"],
+        "meditation": ["meditation", "dhyana", "sit still", "mindfulness", "self inquiry", "self-inquiry"],
+        "breath": ["pranayama", "breath", "breathing"],
+        "mind_strength": ["strong mind", "stronger mind", "mental strength", "clarity", "discipline"],
+        "aligned_people": ["aligned people", "conscious people", "better people", "right people", "soul tribe", "satsang", "wrong environments", "drained by the wrong"],
+        "procedure": ["procedure", "how to", "steps", "what should i do", "path", "attain it"],
+    }
+
+    for topic, markers in topic_markers.items():
+        if any(marker in compact for marker in markers):
+            topics.add(topic)
+
+    return topics
+
+
+def is_spiritual_knowledge_request(user_text: str) -> bool:
+    topics = detect_spiritual_query_topics(user_text)
+    return bool(topics)
+
+
 def needs_context_before_wisdom(user_text: str) -> bool:
     lowered = (user_text or "").strip().lower()
     if not lowered:
@@ -809,6 +968,9 @@ def needs_context_before_wisdom(user_text: str) -> bool:
     compact = re.sub(r"[^a-z0-9' ]+", " ", lowered)
     compact = re.sub(r"\s+", " ", compact).strip()
     tokens = compact.split()
+
+    if should_give_awakening_guidance_now(user_text):
+        return False
 
     if any(phrase in compact for phrase in [
         "what should i do",
@@ -859,23 +1021,24 @@ def needs_context_before_wisdom(user_text: str) -> bool:
     return has_emotional_marker and len(tokens) <= 18
 
 
-def build_question_first_messages(user_text: str, memory_snippet: str, mood: str, language: str) -> list[dict]:
+def build_question_first_messages(user_text: str, memory_snippet: str, mood: str, language: str, user_name: Optional[str]) -> list[dict]:
     normalized_language = normalize_language_choice(language)
     recent_messages = parse_recent_memory_messages(memory_snippet, max_pairs=2)
     return [
         {
             "role": "system",
             "content": (
-                build_system_prompt(user_text, memory_snippet, mood, normalized_language)
+                build_system_prompt(user_text, memory_snippet, mood, normalized_language, user_name)
                 + "\n\nUNDERSTAND FIRST MODE\n"
                 "- Sandy has shared a real feeling, but there is not enough situational context yet.\n"
                 "- Do not give advice, a solution, a path, or a wisdom answer yet.\n"
                 "- Do not interpret her whole life from one line.\n"
                 "- First understand her state like a real close friend.\n"
-                "- Reply with a warm emotional acknowledgement and then one or two gentle, natural questions.\n"
+                "- Reply with a warm emotional acknowledgement and then at most one gentle, natural question.\n"
                 "- The questions should help reveal what happened, what triggered it, or what she is carrying right now.\n"
                 "- Keep the questions conversational, not clinical, not interview-like.\n"
                 "- If wisdom appears here, keep it to one tiny living line only. No full teaching yet.\n"
+                "- Never sound vague, repetitive, or like you are stalling for more context.\n"
                 "- Keep it short, soft, and open enough that she wants to keep talking."
             ),
         },
@@ -898,7 +1061,7 @@ def memory_shows_luna_asked_recent_question(memory_snippet: str) -> bool:
     return False
 
 
-def build_post_context_messages(user_text: str, memory_snippet: str, mood: str, language: str) -> list[dict]:
+def build_post_context_messages(user_text: str, memory_snippet: str, mood: str, language: str, user_name: Optional[str]) -> list[dict]:
     normalized_language = normalize_language_choice(language)
     wisdom_threads = select_wisdom_threads(user_text, mood, limit=1)
     wisdom_block = "\n".join(f"- {item}" for item in wisdom_threads)
@@ -908,7 +1071,7 @@ def build_post_context_messages(user_text: str, memory_snippet: str, mood: str, 
         {
             "role": "system",
             "content": (
-                build_system_prompt(user_text, memory_snippet, mood, normalized_language)
+                build_system_prompt(user_text, memory_snippet, mood, normalized_language, user_name)
                 + "\n\nPOST CONTEXT WISDOM MODE\n"
                 "- Sandy has already answered your earlier understanding question.\n"
                 "- Do not ask more questions.\n"
@@ -1052,6 +1215,58 @@ CURATED_GLOBAL_WISDOM = [
     },
 ]
 
+CURATED_SPIRITUAL_PRACTICE_SOURCES = [
+    {
+        "source": "Patanjali Yoga",
+        "tags": {"yoga", "mind", "discipline", "concentration", "meditation", "samadhi", "practice"},
+        "text": (
+            "In the classical yoga path, awakening is not a sudden cosmic jump. "
+            "It is a training of the whole being through ethics, discipline, posture, breath, sense-withdrawal, concentration, meditation, and absorption. "
+            "A stronger mind is part of the path, not separate from it."
+        ),
+    },
+    {
+        "source": "Vedanta",
+        "tags": {"enlightenment", "self", "awareness", "atma", "consciousness", "self inquiry"},
+        "text": (
+            "Vedanta points less toward travelling outward and more toward recognizing what is already aware within experience. "
+            "Enlightenment here is not collecting dramatic experiences but seeing through false identification and resting in deeper truth."
+        ),
+    },
+    {
+        "source": "Hatha and Pranayama",
+        "tags": {"yoga", "pranayama", "breath", "body", "nervous system", "clarity", "practice"},
+        "text": (
+            "Traditional yoga uses body and breath to steady the mind. "
+            "Pranayama, disciplined posture, and regular practice can reduce inner scattering and make concentration, clarity, and meditation more available."
+        ),
+    },
+    {
+        "source": "Tantra and Chakra Map",
+        "tags": {"chakra", "kundalini", "energy", "subtle body", "meditation", "integration"},
+        "text": (
+            "Chakra language is best treated as a map for purification, attention, and integration, not as a trophy system. "
+            "Real progress shows up as steadiness, ethical strength, clearer awareness, and less fragmentation, not just unusual sensations."
+        ),
+    },
+    {
+        "source": "Satsang",
+        "tags": {"company", "people", "community", "aligned people", "conscious people", "environment", "satsang"},
+        "text": (
+            "Many Indian paths stress satsang: the company you keep matters because mind takes shape from repeated association. "
+            "Better people and cleaner environments are not side issues. They are part of spiritual strengthening."
+        ),
+    },
+    {
+        "source": "Jnana and Self-Inquiry",
+        "tags": {"self inquiry", "mind", "awareness", "witness", "enlightenment", "clarity"},
+        "text": (
+            "Self-inquiry is not about manufacturing a mystical state. "
+            "It is about repeatedly noticing what is changing and what is aware of the change, until identification with mental noise weakens."
+        ),
+    },
+]
+
 NUMBER_SIGN_PATTERNS = [
     "11:11",
     "1111",
@@ -1158,6 +1373,714 @@ def detect_themes(text: str, mood: str) -> set[str]:
     return themes
 
 
+SPIRITUAL_TOPIC_EXPANSIONS = {
+    "enlightenment": {"moksha", "liberation", "self", "witness", "awareness", "truth", "atma", "brahman"},
+    "higher_dimension": {"consciousness", "awareness", "meditation", "subtle", "witness", "stillness"},
+    "yoga": {"yoga", "discipline", "practice", "asana", "meditation", "samadhi"},
+    "chakra": {"chakra", "chakras", "kundalini", "energy", "subtle", "integration"},
+    "meditation": {"meditation", "dhyana", "awareness", "attention", "stillness", "witness"},
+    "breath": {"pranayama", "breath", "breathing", "nervous", "steady"},
+    "mind_strength": {"mind", "discipline", "clarity", "focus", "steady", "strength"},
+    "aligned_people": {"satsang", "company", "community", "environment", "association", "people"},
+    "procedure": {"practice", "discipline", "path", "steps", "how", "attain"},
+}
+
+
+def split_wisdom_sentences(text: str) -> list[str]:
+    cleaned = re.sub(r"\s+", " ", str(text or "").replace("\r", " ").replace("\n", " ")).strip()
+    if not cleaned:
+        return []
+    return [segment.strip() for segment in re.split(r"(?<=[.!?])\s+", cleaned) if segment.strip()]
+
+
+def build_wisdom_passages(text: str, source: str, source_group: str, tags: set[str], max_chars: int = 420) -> list[dict]:
+    sentences = split_wisdom_sentences(text)
+    if not sentences:
+        return []
+
+    passages: list[dict] = []
+    current: list[str] = []
+    current_len = 0
+
+    def flush() -> None:
+        nonlocal current, current_len
+        if not current:
+            return
+        joined = " ".join(current).strip()
+        if joined:
+            passages.append(
+                {
+                    "source": source,
+                    "source_group": source_group,
+                    "text": joined,
+                    "tags": set(tags),
+                }
+            )
+        current = []
+        current_len = 0
+
+    for sentence in sentences:
+        if current and current_len + len(sentence) + 1 > max_chars:
+            flush()
+        current.append(sentence)
+        current_len += len(sentence) + 1
+        if current_len >= 180:
+            flush()
+
+    flush()
+    return passages
+
+
+def build_query_expansion_tokens(
+    user_text: str,
+    mood: str,
+    topics: Optional[set[str]] = None,
+    themes: Optional[set[str]] = None,
+) -> set[str]:
+    query_tokens = set(tokenize_for_wisdom(user_text))
+    topic_set = set(topics or set())
+    theme_set = set(themes or detect_themes(user_text, mood))
+
+    for topic in topic_set:
+        query_tokens.update(SPIRITUAL_TOPIC_EXPANSIONS.get(topic, set()))
+
+    for theme in theme_set:
+        query_tokens.add(theme)
+        query_tokens.update(THEME_KEYWORDS.get(theme, set()))
+
+    lowered = (user_text or "").lower()
+    if "higher dimension" in lowered or "higher dimensions" in lowered:
+        query_tokens.update({"consciousness", "awareness", "subtle", "meditation"})
+    if "strong mind" in lowered or "stronger mind" in lowered:
+        query_tokens.update({"discipline", "clarity", "focus", "steady"})
+    if "better people" in lowered or "conscious people" in lowered:
+        query_tokens.update({"satsang", "company", "community", "environment"})
+
+    return {token for token in query_tokens if token}
+
+
+def build_dataset_wisdom_index() -> dict:
+    docs: list[dict] = []
+    document_frequency: dict[str, int] = {}
+    total_length = 0
+
+    for entry_index, wisdom in enumerate(WISDOM_TEXTS):
+        passage_tags = detect_themes(wisdom, "neutral") | {"wisdom", "dataset"}
+        passages = build_wisdom_passages(
+            wisdom,
+            source=f"Ancient Indian wisdom dataset #{entry_index + 1}",
+            source_group="dataset",
+            tags=passage_tags,
+        )
+        for passage in passages:
+            tokens = tokenize_for_wisdom(passage["text"])
+            if not tokens:
+                continue
+            term_counts: dict[str, int] = {}
+            for token in tokens:
+                term_counts[token] = term_counts.get(token, 0) + 1
+            unique_tokens = set(term_counts)
+            for token in unique_tokens:
+                document_frequency[token] = document_frequency.get(token, 0) + 1
+            total_length += len(tokens)
+            docs.append(
+                {
+                    **passage,
+                    "tokens": tokens,
+                    "term_counts": term_counts,
+                    "doc_len": len(tokens),
+                }
+            )
+
+    avg_doc_len = (total_length / len(docs)) if docs else 1.0
+    total_docs = len(docs)
+    idf = {
+        token: math.log(1 + ((total_docs - freq + 0.5) / (freq + 0.5)))
+        for token, freq in document_frequency.items()
+    }
+    return {"docs": docs, "idf": idf, "avg_doc_len": avg_doc_len}
+
+
+DATASET_WISDOM_INDEX = build_dataset_wisdom_index()
+
+
+def score_dataset_passage(
+    user_text: str,
+    mood: str,
+    passage: dict,
+    query_tokens: set[str],
+    topics: Optional[set[str]] = None,
+    themes: Optional[set[str]] = None,
+) -> float:
+    idf = DATASET_WISDOM_INDEX.get("idf", {})
+    avg_doc_len = float(DATASET_WISDOM_INDEX.get("avg_doc_len") or 1.0)
+    term_counts = dict(passage.get("term_counts") or {})
+    doc_len = max(1, int(passage.get("doc_len") or 1))
+    score = 0.0
+    k1 = 1.5
+    b = 0.75
+
+    for token in query_tokens:
+        frequency = term_counts.get(token, 0)
+        if not frequency:
+            continue
+        token_idf = idf.get(token, 0.0)
+        denom = frequency + k1 * (1 - b + b * (doc_len / avg_doc_len))
+        score += token_idf * ((frequency * (k1 + 1)) / denom)
+
+    lowered_user = (user_text or "").lower()
+    lowered_text = str(passage.get("text") or "").lower()
+    theme_set = set(themes or detect_themes(user_text, mood))
+    topic_set = set(topics or set())
+    passage_tags = set(passage.get("tags") or set())
+
+    score += 0.9 * len(theme_set & passage_tags)
+    if topic_set:
+        for topic in topic_set:
+            if passage_tags & SPIRITUAL_TOPIC_EXPANSIONS.get(topic, set()):
+                score += 1.2
+
+    if any(phrase in lowered_text for phrase in ["would you like", "please feel free to ask", "i hope this", "parable"]):
+        score -= 2.8
+    if any(
+        phrase in lowered_text
+        for phrase in [
+            "beautiful",
+            "profound",
+            "holds great significance",
+            "serves as a means",
+            "it is believed",
+            "can lead to",
+        ]
+    ):
+        score -= 1.2
+    if "procedure" in topic_set and any(
+        word in lowered_text for word in ["discipline", "ethics", "breath", "meditation", "concentration", "practice"]
+    ):
+        score += 1.8
+    if "chakra" in topic_set and any(word in lowered_text for word in ["chakra", "kundalini", "integration"]):
+        score += 1.6
+    if "higher dimension" in lowered_user and any(word in lowered_text for word in ["awareness", "meditation", "self", "consciousness"]):
+        score += 1.6
+    if "yoga" in lowered_user and any(word in lowered_text for word in ["yoga", "pranayama", "breath", "samadhi"]):
+        score += 1.5
+    if "better people" in lowered_user or "conscious people" in lowered_user:
+        if any(word in lowered_text for word in ["company", "association", "community", "environment", "satsang"]):
+            score += 1.6
+
+    return score
+
+
+def retrieve_dataset_wisdom_passages(
+    user_text: str,
+    mood: str,
+    max_items: int = 4,
+    topics: Optional[set[str]] = None,
+) -> list[dict]:
+    docs = list(DATASET_WISDOM_INDEX.get("docs") or [])
+    if not docs:
+        return []
+
+    theme_set = detect_themes(user_text, mood)
+    query_tokens = build_query_expansion_tokens(user_text, mood, topics=topics, themes=theme_set)
+    if not query_tokens:
+        return []
+
+    ranked: list[tuple[float, dict]] = []
+    for passage in docs:
+        score = score_dataset_passage(user_text, mood, passage, query_tokens, topics=topics, themes=theme_set)
+        if score < 1.8:
+            continue
+        ranked.append((score, passage))
+
+    ranked.sort(key=lambda item: item[0], reverse=True)
+
+    selected: list[dict] = []
+    seen_texts = set()
+    for score, passage in ranked:
+        text = compress_wisdom_text(str(passage["text"]), max_chars=320)
+        if not text or text in seen_texts:
+            continue
+        selected.append(
+            {
+                "source": "Ancient Indian wisdom dataset",
+                "source_detail": str(passage["source"]),
+                "text": text,
+                "score": round(score, 3),
+            }
+        )
+        seen_texts.add(text)
+        if len(selected) >= max_items:
+            break
+
+    return selected
+
+
+def normalize_user_name(user_name: Optional[str]) -> str:
+    cleaned = re.sub(r"\s+", " ", str(user_name or "Sandy")).strip()
+    return cleaned[:60] or "Sandy"
+
+
+def user_key(user_name: Optional[str]) -> str:
+    normalized = normalize_user_name(user_name).lower()
+    safe = re.sub(r"[^a-z0-9]+", "-", normalized).strip("-")
+    return safe or "sandy"
+
+
+def azure_diary_enabled() -> bool:
+    return bool(AZURE_STORAGE_CONNECTION_STRING and BlobServiceClient)
+
+
+def get_diary_blob_name(user_name: Optional[str]) -> str:
+    return f"diary/{user_key(user_name)}.json"
+
+
+def get_blob_service_client() -> Any | None:
+    if not azure_diary_enabled():
+        return None
+    blob_service_client_cls = cast(Any, BlobServiceClient)
+    return blob_service_client_cls.from_connection_string(AZURE_STORAGE_CONNECTION_STRING)
+
+
+def load_diary_from_azure(user_name: Optional[str]) -> list[dict]:
+    blob_service = get_blob_service_client()
+    if blob_service is None:
+        return []
+
+    try:
+        container_client = blob_service.get_container_client(AZURE_STORAGE_CONTAINER)
+        try:
+            container_client.create_container()
+        except Exception:
+            pass
+
+        blob_client = container_client.get_blob_client(get_diary_blob_name(user_name))
+        if not blob_client.exists():
+            return []
+
+        payload = blob_client.download_blob().readall()
+        data = json.loads(payload.decode("utf-8"))
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def save_diary_to_azure(user_name: Optional[str], diary: list[dict]) -> bool:
+    blob_service = get_blob_service_client()
+    if blob_service is None:
+        return False
+
+    try:
+        container_client = blob_service.get_container_client(AZURE_STORAGE_CONTAINER)
+        try:
+            container_client.create_container()
+        except Exception:
+            pass
+
+        payload = json.dumps(diary, indent=2, ensure_ascii=False).encode("utf-8")
+        blob_client = container_client.get_blob_client(get_diary_blob_name(user_name))
+        blob_client.upload_blob(payload, overwrite=True)
+        return True
+    except Exception:
+        return False
+
+
+def parse_recent_user_messages(memory_text: str, max_messages: int = 6) -> list[str]:
+    messages = []
+    for raw_line in (memory_text or "").splitlines():
+        line = raw_line.strip()
+        if line.startswith("LUNA:") or line.startswith("System note:") or ":" not in line:
+            continue
+        speaker, _, content = line.partition(":")
+        if speaker.strip() and content.strip():
+            content = content.strip()
+            if content:
+                messages.append(content)
+    if max_messages <= 0:
+        return messages
+    return messages[-max_messages:]
+
+
+def infer_support_focus(text: str, mood: str, themes: set[str]) -> str:
+    lowered = (text or "").lower()
+
+    if any(term in lowered for term in [
+        "higher density", "higher vibration", "higher frequency", "aligned people",
+        "conscious people", "soul tribe", "good people around me", "right people",
+    ]):
+        return "safe belonging, discernment, and connection with aligned people"
+    if "dignity" in themes or "freedom" in themes or any(term in lowered for term in ["blame", "objectify", "disrespect", "controlled", "caged", "trapped"]):
+        return "dignity, boundaries, and inner freedom"
+    if mood in {"anxious", "overwhelmed"} or "fear" in themes:
+        return "grounding, steadiness, and mental clarity"
+    if mood == "sad" or "pain" in themes or "relationship" in themes:
+        return "emotional holding, self-worth, and warmth"
+    if mood == "tired":
+        return "rest, softness, and gentle self-return"
+    if "clarity" in themes or any(term in lowered for term in ["purpose", "path", "direction", "truth"]):
+        return "clarity, self-trust, and right direction"
+    return "self-trust, steadiness, and clear seeing"
+
+
+def infer_awakening_focus(text: str, mood: str, themes: set[str]) -> str:
+    lowered = (text or "").lower()
+
+    if any(term in lowered for term in [
+        "higher density", "higher vibration", "higher frequency", "conscious people",
+        "enlightened people", "soul tribe", "aligned people", "right people",
+    ]):
+        return "moving toward conscious relationships, discernment, and a more awakened life"
+    if "awakening" in themes or any(term in lowered for term in [
+        "awakening", "awaken", "who am i", "witness", "consciousness", "inner self",
+        "higher self", "disconnected from myself", "lost myself",
+    ]):
+        return "witness-consciousness and coming back to the true self"
+    if any(term in lowered for term in ["pattern", "patterns", "trigger", "triggered", "loop", "loops", "react", "reaction", "attachment", "ego"]):
+        return "seeing the old pattern before it takes over"
+    if "freedom" in themes or any(term in lowered for term in ["controlled", "caged", "trapped", "forced", "objectify", "blame"]):
+        return "inner freedom that does not let outer pressure define the self"
+    if any(term in lowered for term in ["purpose", "path", "calling", "dharma", "direction", "truth"]):
+        return "truth, alignment, and the path that feels deeply real"
+    if mood in {"anxious", "overwhelmed"}:
+        return "not believing every thought the mind throws up"
+    if mood == "sad":
+        return "staying with pain without abandoning the self inside it"
+    return "awareness over reactivity"
+
+
+def infer_core_need(text: str, mood: str, themes: set[str]) -> str:
+    lowered = (text or "").lower()
+
+    if "dignity" in themes or any(term in lowered for term in ["blame", "objectify", "disrespect", "controlled"]):
+        return "to feel respected and not overrun"
+    if mood in {"anxious", "overwhelmed"}:
+        return "to feel safe enough to slow down"
+    if mood in {"sad", "tired"}:
+        return "to feel held instead of carrying this alone"
+    if any(term in lowered for term in ["purpose", "path", "dharma", "direction"]):
+        return "to trust inner truth again"
+    if any(term in lowered for term in ["awakening", "who am i", "disconnected from myself"]):
+        return "to come back into contact with the deeper self"
+    return "to feel seen clearly and guided wisely"
+
+
+def infer_growth_edge(text: str, mood: str, themes: set[str]) -> str:
+    lowered = (text or "").lower()
+
+    if any(term in lowered for term in [
+        "higher density", "higher vibration", "higher frequency", "aligned people",
+        "conscious people", "soul tribe", "right people",
+    ]):
+        return "choosing aligned people and practices over noisy, draining environments"
+    if any(term in lowered for term in ["pattern", "trigger", "triggered", "loop", "loops", "react", "reaction"]):
+        return "pausing before the old pattern becomes identity"
+    if "freedom" in themes or any(term in lowered for term in ["controlled", "caged", "trapped", "forced"]):
+        return "protecting inner freedom while life feels pressuring"
+    if any(term in lowered for term in ["purpose", "path", "calling", "dharma", "direction"]):
+        return "listening for what feels true instead of what feels imposed"
+    if any(term in lowered for term in ["awakening", "who am i", "disconnected from myself", "lost myself"]):
+        return "staying in self-awareness instead of drifting into numbness"
+    if mood in {"sad", "tired"}:
+        return "not abandoning the self during pain or exhaustion"
+    if mood in {"anxious", "overwhelmed"}:
+        return "choosing steadiness before more thinking"
+    return "moving from reaction toward clear inner seeing"
+
+
+def infer_response_mode(text: str, mood: str, themes: set[str]) -> str:
+    lowered = (text or "").lower()
+    compact = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9' ]+", " ", lowered)).strip()
+    short_raw = len(compact.split()) <= 12
+
+    if any(term in lowered for term in ["awakening", "awaken", "who am i", "witness", "consciousness", "path", "dharma", "calling"]):
+        return "awakening-through-softness"
+    if "dignity" in themes or "freedom" in themes:
+        return "truth-with-tenderness"
+    if mood in {"sad", "tired"} or short_raw:
+        return "companion-first"
+    if mood in {"anxious", "overwhelmed", "angry"}:
+        return "steadying-with-clarity"
+    return "companion-with-awakening"
+
+
+def infer_recent_pattern(recent_user_messages: list[str]) -> str:
+    if not recent_user_messages:
+        return ""
+
+    bundle = " ".join(message.lower() for message in recent_user_messages[-4:])
+    if any(term in bundle for term in ["pattern", "trigger", "loop", "again and again", "same thing"]):
+        return "repeating emotional loops are active lately"
+    if any(term in bundle for term in ["purpose", "path", "dharma", "direction", "truth"]):
+        return "there is an ongoing search for direction and truth"
+    if any(term in bundle for term in ["controlled", "trapped", "caged", "freedom", "blame", "objectify"]):
+        return "freedom, dignity, and boundaries are recurring live themes"
+    if any(term in bundle for term in ["tired", "drained", "overwhelmed", "stress", "anxiety", "overthinking"]):
+        return "the emotional pressure has been building over multiple turns"
+    if any(term in bundle for term in ["lonely", "hurt", "broken", "miss", "grief", "heartbreak"]):
+        return "the heart has been asking for companionship and softness"
+    return ""
+
+
+def build_inner_state_summary(profile: dict) -> str:
+    response_mode = str(profile.get("response_mode") or "")
+    awakening_focus = profile.get("awakening_focus") or "awareness over reactivity"
+    core_need = profile.get("core_need") or "to feel seen clearly and guided wisely"
+
+    if response_mode == "companion-first":
+        return f"Needing warmth and emotional safety first, then gentle guidance toward {awakening_focus}."
+    if response_mode == "steadying-with-clarity":
+        return f"Needing steadiness more than more thinking right now, with a gentle move toward {awakening_focus}."
+    if response_mode == "truth-with-tenderness":
+        return f"Needing honest support without losing softness, especially around {awakening_focus}."
+    if response_mode == "awakening-through-softness":
+        return f"Reaching for deeper truth right now, but still needing warmth while moving toward {awakening_focus}."
+    return f"Needs {core_need}, with guidance slowly opening toward {awakening_focus}."
+
+
+def infer_inner_state_profile(user_text: str, memory_snippet: str, mood: str) -> dict:
+    recent_user_messages = parse_recent_user_messages(memory_snippet, max_messages=6)
+    combined_text = "\n".join([*recent_user_messages[-4:], user_text]).strip() or user_text
+    themes = detect_themes(combined_text, mood)
+
+    profile = {
+        "response_mode": infer_response_mode(combined_text, mood, themes),
+        "support_focus": infer_support_focus(combined_text, mood, themes),
+        "awakening_focus": infer_awakening_focus(combined_text, mood, themes),
+        "core_need": infer_core_need(combined_text, mood, themes),
+        "growth_edge": infer_growth_edge(combined_text, mood, themes),
+        "recent_pattern": infer_recent_pattern(recent_user_messages),
+        "themes": sorted(themes),
+    }
+    profile["summary"] = build_inner_state_summary(profile)
+    return profile
+
+
+SOUL_VALUE_SIGNALS = {
+    "truth": {"truth", "honest", "real", "authentic", "authenticity"},
+    "freedom": {"free", "freedom", "independent", "control", "controlled", "caged", "trapped"},
+    "dignity": {"dignity", "respect", "voice", "seen", "heard", "worth", "worthy"},
+    "peace": {"peace", "calm", "stillness", "rest", "quiet"},
+    "love": {"love", "care", "heart", "warmth", "compassion"},
+    "purpose": {"purpose", "path", "calling", "dharma", "direction"},
+    "awareness": {"awareness", "consciousness", "witness", "awakening", "awake"},
+    "alignment": {"aligned", "alignment", "resonance", "resonate", "truthful people", "right people"},
+    "community": {"community", "tribe", "satsang", "people around me", "conscious people", "higher people"},
+    "service": {"service", "serve", "uplift", "guide", "help humanity", "humanity"},
+}
+
+SOUL_WOUND_SIGNALS = {
+    "control_pressure": {"controlled", "forced", "caged", "trapped", "pressure"},
+    "invisibility_disrespect": {"objectify", "objectified", "unseen", "ignored", "blame", "disrespect"},
+    "self_disconnection": {"disconnected", "lost myself", "not myself", "empty"},
+    "emotional_overload": {"overwhelmed", "drained", "burnout", "too much", "overthinking", "anxiety"},
+    "grief_loneliness": {"lonely", "alone", "grief", "heartbreak", "broken", "miss"},
+    "confusion_direction": {"confused", "direction", "path", "purpose", "lost"},
+    "isolation_misalignment": {"wrong people", "no one understands", "not my people", "misaligned", "alone around people"},
+}
+
+SOUL_PATTERN_SIGNALS = {
+    "overthinking_loops": {"overthinking", "same thing", "again and again", "loop", "pattern", "trigger"},
+    "self_abandonment": {"disconnect", "lost myself", "not myself", "empty", "numb"},
+    "people_pressure": {"forced", "pressure", "controlled", "family", "parents", "they said"},
+    "silencing_truth": {"cannot say", "cant say", "no voice", "not heard", "hide", "pretend"},
+    "carrying_too_much": {"overwhelmed", "too much", "burden", "drained", "exhausted"},
+    "misaligned_connections": {"wrong people", "draining people", "misaligned", "no one understands", "not my people"},
+    "seeking_without_grounding": {"enlightenment", "higher density", "higher vibration", "higher frequency"},
+}
+
+SOUL_GROWTH_SIGNALS = {
+    "self_trust": {"truth", "trust", "real", "authentic"},
+    "boundaries": {"boundaries", "respect", "voice", "freedom", "space"},
+    "witness_awareness": {"witness", "awareness", "consciousness", "awakening", "observe"},
+    "rest_regulation": {"rest", "calm", "peace", "stillness", "grounding"},
+    "purpose_alignment": {"purpose", "path", "calling", "dharma", "direction"},
+    "conscious_relationships": {"aligned people", "conscious people", "right people", "soul tribe", "community"},
+    "discernment": {"discernment", "clarity", "alignment", "truth", "resonance"},
+    "contemplative_practice": {"meditation", "silence", "stillness", "prayer", "self inquiry", "self-inquiry"},
+}
+
+
+def default_soul_map(user_name: Optional[str]) -> dict:
+    return {
+        "user_name": normalize_user_name(user_name),
+        "values": {},
+        "wounds": {},
+        "patterns": {},
+        "growth": {},
+        "recent_modes": [],
+        "recent_focuses": [],
+        "summary": "",
+        "last_updated": "",
+    }
+
+
+def collect_signal_hits(text: str, signal_map: dict[str, set[str]], *, boost: int = 1) -> dict[str, int]:
+    lowered = (text or "").lower()
+    hits: dict[str, int] = {}
+    for label, keywords in signal_map.items():
+        count = sum(1 for keyword in keywords if keyword in lowered)
+        if count:
+            hits[label] = count * boost
+    return hits
+
+
+def merge_counter_values(existing: SoulCounter | None, additions: dict[str, int], *, decay: float = 0.0) -> dict[str, int]:
+    merged: dict[str, int] = {}
+    for key, value in (existing or {}).items():
+        next_value = int(round(float(value) * (1 - decay)))
+        if next_value > 0:
+            merged[key] = next_value
+    for key, value in additions.items():
+        merged[key] = merged.get(key, 0) + int(value)
+    return merged
+
+
+def top_labels(counter: SoulCounter | None, limit: int = 3) -> list[str]:
+    items = [(str(key), int(value)) for key, value in (counter or {}).items() if int(value) > 0]
+    items.sort(key=lambda item: item[1], reverse=True)
+    return [label for label, _ in items[:limit]]
+
+
+def normalize_soul_counter(value: object) -> SoulCounter:
+    if not isinstance(value, dict):
+        return {}
+
+    counter: SoulCounter = {}
+    for key, item in value.items():
+        try:
+            count = int(item)
+        except (TypeError, ValueError):
+            continue
+        if count > 0:
+            counter[str(key)] = count
+    return counter
+
+
+def normalize_string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if str(item).strip()]
+
+
+def load_all_soul_maps() -> SoulMapStore:
+    if not SOUL_MAP_FILE.exists():
+        return {}
+    try:
+        data = json.loads(SOUL_MAP_FILE.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return {}
+
+        maps: SoulMapStore = {}
+        for key, value in data.items():
+            if isinstance(value, dict):
+                maps[str(key)] = dict(value)
+        return maps
+    except Exception:
+        return {}
+
+
+def save_all_soul_maps(payload: SoulMapStore) -> None:
+    try:
+        SOUL_MAP_FILE.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def load_soul_map(user_name: Optional[str]) -> SoulMap:
+    maps = load_all_soul_maps()
+    key = user_key(user_name)
+    soul_map = maps.get(key)
+    if isinstance(soul_map, dict):
+        return dict(soul_map)
+    return default_soul_map(user_name)
+
+
+def build_soul_map_summary(soul_map: SoulMap) -> str:
+    values = top_labels(normalize_soul_counter(soul_map.get("values")), limit=3)
+    wounds = top_labels(normalize_soul_counter(soul_map.get("wounds")), limit=2)
+    patterns = top_labels(normalize_soul_counter(soul_map.get("patterns")), limit=2)
+    growth = top_labels(normalize_soul_counter(soul_map.get("growth")), limit=2)
+
+    parts = []
+    if values:
+        parts.append(f"Core values keep pointing toward {', '.join(values)}")
+    if wounds:
+        parts.append(f"recurring hurt around {', '.join(wounds)}")
+    if patterns and any(label in patterns for label in ["misaligned_connections", "seeking_without_grounding"]):
+        parts.append(f"a live pattern around {', '.join(patterns)}")
+    if growth:
+        parts.append(f"current growth arc: {', '.join(growth)}")
+    return ". ".join(parts).strip()
+
+
+def update_soul_map(user_name: Optional[str], user_text: str, inner_state: dict) -> SoulMap:
+    normalized_name = normalize_user_name(user_name)
+    key = user_key(normalized_name)
+    maps = load_all_soul_maps()
+    existing_map = maps.get(key)
+    soul_map = dict(existing_map) if isinstance(existing_map, dict) else default_soul_map(normalized_name)
+
+    combined_text = " ".join([
+        user_text,
+        str(inner_state.get("support_focus") or ""),
+        str(inner_state.get("awakening_focus") or ""),
+        str(inner_state.get("growth_edge") or ""),
+    ]).strip()
+
+    value_hits = collect_signal_hits(combined_text, SOUL_VALUE_SIGNALS)
+    wound_hits = collect_signal_hits(combined_text, SOUL_WOUND_SIGNALS)
+    pattern_hits = collect_signal_hits(combined_text, SOUL_PATTERN_SIGNALS)
+    growth_hits = collect_signal_hits(combined_text, SOUL_GROWTH_SIGNALS)
+
+    soul_map["user_name"] = normalized_name
+    soul_map["values"] = merge_counter_values(normalize_soul_counter(soul_map.get("values")), value_hits, decay=0.02)
+    soul_map["wounds"] = merge_counter_values(normalize_soul_counter(soul_map.get("wounds")), wound_hits, decay=0.01)
+    soul_map["patterns"] = merge_counter_values(normalize_soul_counter(soul_map.get("patterns")), pattern_hits, decay=0.01)
+    soul_map["growth"] = merge_counter_values(normalize_soul_counter(soul_map.get("growth")), growth_hits, decay=0.02)
+    soul_map["recent_modes"] = [*normalize_string_list(soul_map.get("recent_modes")), str(inner_state.get("response_mode") or "")][-6:]
+    soul_map["recent_focuses"] = [*normalize_string_list(soul_map.get("recent_focuses")), str(inner_state.get("awakening_focus") or "")][-6:]
+    soul_map["summary"] = build_soul_map_summary(soul_map)
+    soul_map["last_updated"] = str(datetime.now())
+
+    maps[key] = soul_map
+    save_all_soul_maps(maps)
+    return soul_map
+
+
+def build_soul_map_context(user_name: Optional[str], soul_map: Optional[SoulMap] = None) -> str:
+    current = soul_map if isinstance(soul_map, dict) else load_soul_map(user_name)
+    if not current:
+        return ""
+
+    lines = []
+    if current.get("summary"):
+        lines.append(f"- Longer arc summary: {current['summary']}")
+    values = top_labels(normalize_soul_counter(current.get("values")), limit=3)
+    wounds = top_labels(normalize_soul_counter(current.get("wounds")), limit=2)
+    patterns = top_labels(normalize_soul_counter(current.get("patterns")), limit=2)
+    growth = top_labels(normalize_soul_counter(current.get("growth")), limit=2)
+    if values:
+        lines.append(f"- Core values: {', '.join(values)}")
+    if wounds:
+        lines.append(f"- Recurring hurts: {', '.join(wounds)}")
+    if patterns:
+        lines.append(f"- Repeating patterns: {', '.join(patterns)}")
+    if growth:
+        lines.append(f"- Growth directions: {', '.join(growth)}")
+    if any(label in values for label in ["alignment", "community", "awareness"]) or any(label in growth for label in ["conscious_relationships", "discernment", "contemplative_practice"]):
+        lines.append("- Awakening path: support deeper awareness through discernment, contemplative practice, and connection with aligned people.")
+    return "\n".join(lines).strip()
+
+
+def build_spiritual_alignment_guidance() -> str:
+    return "\n".join([
+        "- If she longs for enlightenment, higher consciousness, or more awakened people, translate that into grounded guidance around awareness, discernment, contemplative practice, and aligned human connection.",
+        "- Treat phrases like higher density, higher vibration, or higher frequency as a longing for more conscious living and more aligned people unless she clearly defines them another way.",
+        "- Help her move toward better inner states and better company through truth, calm, discernment, and lived practice, not through grand claims or special-status language.",
+        "- Do not claim supernatural certainty, hidden cosmic rank, or guaranteed enlightenment.",
+    ])
+
+
 def infer_situation_focus(user_text: str) -> str:
     lowered = (user_text or "").lower()
 
@@ -1187,7 +2110,7 @@ def should_use_direct_scenario_reply(user_text: str) -> bool:
     return focus != "emotional self-reflection" and len(compact.split()) >= 18
 
 
-def build_direct_scenario_messages(user_text: str, memory_snippet: str, mood: str, language: str) -> list[dict]:
+def build_direct_scenario_messages(user_text: str, memory_snippet: str, mood: str, language: str, user_name: Optional[str]) -> list[dict]:
     normalized_language = normalize_language_choice(language)
     focus = infer_situation_focus(user_text)
     wisdom_threads = select_wisdom_threads(user_text, mood, limit=1)
@@ -1203,7 +2126,7 @@ def build_direct_scenario_messages(user_text: str, memory_snippet: str, mood: st
         {
             "role": "system",
             "content": (
-                build_system_prompt(user_text, memory_snippet, mood, normalized_language)
+                build_system_prompt(user_text, memory_snippet, mood, normalized_language, user_name)
                 + "\n\nDIRECT SCENARIO MODE\n"
                 + "- The user has already described a clear lived situation.\n"
                 + continuation_note
@@ -1244,6 +2167,13 @@ def get_response_archetype_config(archetype: str) -> dict:
 
 def detect_response_archetype(user_text: str, mood: str) -> str:
     lowered = (user_text or "").lower()
+
+    if any(term in lowered for term in [
+        "higher density", "higher vibration", "higher frequency", "conscious people", "aligned people",
+        "right people", "soul tribe", "wrong environments", "wrong energy", "drained by the wrong",
+        "strong mind", "enlightenment", "enlighten",
+    ]):
+        return "awakening_healing"
 
     if any(term in lowered for term in [
         "awakening", "awaken", "inner self", "higher self", "consciousness", "who am i",
@@ -1478,14 +2408,32 @@ def select_wisdom_threads(user_text: str, mood: str, limit: Optional[int] = None
     recent_usage = set(load_recent_wisdom_usage())
     compact_user = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9' ]+", " ", (user_text or "").lower())).strip()
     archetype = detect_response_archetype(user_text, mood)
+    inner_state = infer_inner_state_profile(user_text, "", mood)
 
     ranked: list[tuple[int, str, str]] = []
-    for wisdom in WISDOM_TEXTS:
-        summary = compress_wisdom_text(wisdom)
+    for theme in sorted(themes):
+        seed_text = LIVING_WISDOM_SEEDS.get(theme)
+        if not seed_text:
+            continue
+        formatted = format_wisdom_thread("Living wisdom", seed_text)
+        score = score_wisdom_entry(user_text, mood, seed_text) + 10
+        if theme in inner_state.get("support_focus", ""):
+            score += 2
+        if theme in inner_state.get("awakening_focus", ""):
+            score += 3
+        if formatted in recent_usage:
+            score -= 6
+        ranked.append((score, formatted, "living"))
+
+    dataset_passages = retrieve_dataset_wisdom_passages(user_text, mood, max_items=max(4, wisdom_limit * 4))
+    for item in dataset_passages:
+        summary = str(item["text"])
         formatted = format_wisdom_thread("Ancient Indian wisdom", summary)
-        score = score_wisdom_entry(user_text, mood, summary)
+        score = score_wisdom_entry(user_text, mood, summary) + int(float(item.get("score") or 0))
         if formatted in recent_usage:
             score -= 8
+        if len(summary) > 215:
+            score -= 2
         if archetype == "awakening_reframe" and any(word in summary.lower() for word in ["witness", "awareness", "self", "truth", "stillness"]):
             score += 5
         if archetype == "purpose_dharma" and any(word in summary.lower() for word in ["dharma", "path", "purpose", "truth", "calling"]):
@@ -1562,6 +2510,257 @@ def select_wisdom_threads(user_text: str, mood: str, limit: Optional[int] = None
     return result[:wisdom_limit]
 
 
+def score_spiritual_source(user_text: str, topics: set[str], text: str, tags: set[str]) -> int:
+    lowered = (user_text or "").lower()
+    compressed = compress_wisdom_text(text, max_chars=320)
+    compressed_lower = compressed.lower()
+    token_overlap = len(set(tokenize_for_wisdom(user_text)) & set(tokenize_for_wisdom(compressed)))
+    score = token_overlap * 3
+
+    tag_map = {
+        "enlightenment": {"enlightenment", "self", "awareness", "atma", "consciousness", "liberation"},
+        "higher_dimension": {"awareness", "consciousness", "self", "meditation", "clarity"},
+        "yoga": {"yoga", "practice", "discipline", "meditation", "mind"},
+        "chakra": {"chakra", "kundalini", "energy", "integration", "meditation"},
+        "meditation": {"meditation", "self inquiry", "awareness", "mind", "practice"},
+        "breath": {"pranayama", "breath", "body", "clarity", "practice"},
+        "mind_strength": {"mind", "discipline", "clarity", "practice", "awareness"},
+        "aligned_people": {"company", "people", "community", "environment", "satsang"},
+        "procedure": {"practice", "discipline", "meditation", "breath", "yoga"},
+    }
+
+    for topic in topics:
+        if tags & tag_map.get(topic, set()):
+            score += 8
+
+    if "higher dimension" in lowered or "higher dimensions" in lowered:
+        if any(tag in tags for tag in {"awareness", "meditation", "self", "consciousness"}):
+            score += 6
+    if "chakra" in lowered and any(tag in tags for tag in {"chakra", "kundalini", "energy"}):
+        score += 8
+    if "yoga" in lowered and any(tag in tags for tag in {"yoga", "discipline", "practice"}):
+        score += 8
+    if "procedure" in topics and any(
+        word in compressed_lower
+        for word in ["ethics", "discipline", "breath", "concentration", "meditation", "practice", "stillness"]
+    ):
+        score += 8
+    if "mind_strength" in topics and any(
+        word in compressed_lower for word in ["discipline", "clarity", "steady", "mind", "scattering"]
+    ):
+        score += 6
+    if "aligned_people" in topics and any(
+        word in compressed_lower for word in ["company", "association", "environment", "community", "satsang"]
+    ):
+        score += 6
+
+    if any(phrase in compressed_lower for phrase in ["would you like", "please feel free to ask", "i hope this", "parable"]):
+        score -= 8
+    if any(
+        phrase in compressed_lower
+        for phrase in [
+            "beautiful",
+            "profound",
+            "holds great significance",
+            "central to",
+            "powerful tool",
+            "serves as a means",
+            "embodiment of",
+            "it teaches us to",
+            "can lead to",
+            "it is believed",
+        ]
+    ):
+        score -= 5
+
+    return score
+
+
+def retrieve_spiritual_source_contexts(user_text: str, max_items: int = 3) -> list[dict]:
+    topics = detect_spiritual_query_topics(user_text)
+    if not topics:
+        return []
+
+    ranked: list[tuple[float, dict[str, object]]] = []
+
+    for entry in CURATED_SPIRITUAL_PRACTICE_SOURCES:
+        source_name = str(entry["source"])
+        text = str(entry["text"])
+        tags = set(entry.get("tags") or set())
+        score = score_spiritual_source(user_text, topics, text, tags) + 18
+        source_lower = source_name.lower()
+        if "chakra" in topics and "chakra" in source_lower:
+            score += 6
+        if "higher_dimension" in topics and source_name in {"Vedanta", "Jnana and Self-Inquiry", "Patanjali Yoga"}:
+            score += 4
+        if "aligned_people" in topics and source_name == "Satsang":
+            score += 6
+        ranked.append((score, {"source": source_name, "text": text, "source_group": "curated_spiritual", "_score": score}))
+
+    for entry in CURATED_GLOBAL_WISDOM:
+        text = str(entry["text"])
+        tags = set(entry.get("themes") or set())
+        score = score_spiritual_source(user_text, topics, text, tags)
+        ranked.append((score, {"source": str(entry["source"]), "text": text, "source_group": "global", "_score": score}))
+
+    dataset_passages = retrieve_dataset_wisdom_passages(user_text, detect_mood(user_text), max_items=8, topics=topics)
+    for item in dataset_passages:
+        compressed = str(item["text"])
+        score = score_spiritual_source(user_text, topics, compressed, set(tokenize_for_wisdom(compressed))) + float(item.get("score") or 0)
+        if score < 8:
+            continue
+        ranked.append((score, {"source": str(item["source"]), "text": compressed, "source_group": "dataset", "_score": score}))
+
+    ranked.sort(key=lambda item: item[0], reverse=True)
+
+    picked = []
+    seen_texts = set()
+    seen_sources = set()
+    for score, item in ranked:
+        text = str(item["text"]).strip()
+        source = str(item["source"]).strip()
+        if not text or text in seen_texts:
+            continue
+        if len(picked) >= max_items:
+            break
+        if source in seen_sources and score < ranked[0][0] - 2:
+            continue
+        picked.append(item)
+        seen_texts.add(text)
+        seen_sources.add(source)
+
+    priority = {"curated_spiritual": 0, "global": 1, "dataset": 2}
+    picked.sort(key=lambda item: (priority.get(str(item.get("source_group") or ""), 3), -float(item.get("_score") or 0)))
+    return [{"source": str(item["source"]), "text": str(item["text"])} for item in picked]
+
+
+def build_spiritual_source_block(user_text: str, max_items: int = 3) -> str:
+    contexts = retrieve_spiritual_source_contexts(user_text, max_items=max_items)
+    if not contexts:
+        return ""
+    return "\n".join(f"- [{item['source']}] {item['text']}" for item in contexts)
+
+
+def build_spiritual_focus_directive(user_text: str) -> str:
+    topics = detect_spiritual_query_topics(user_text)
+    directives: list[str] = []
+
+    if "procedure" in topics:
+        directives.append(
+            "Give an actual path in plain language. Make the sequence clear instead of sounding inspirational."
+        )
+    if "higher_dimension" in topics:
+        directives.append(
+            "Interpret 'higher dimension' carefully through spiritual practice as deeper consciousness, steadier awareness, and subtler perception, not guaranteed cosmic travel."
+        )
+    if "enlightenment" in topics:
+        directives.append(
+            "Explain enlightenment as liberation from confusion, compulsive identification, and inner fragmentation, not as a flashy mystical trophy."
+        )
+    if "yoga" in topics:
+        directives.append(
+            "Explain yoga as a full discipline that includes conduct, body, breath, concentration, meditation, and repeated inner training."
+        )
+    if "chakra" in topics:
+        directives.append(
+            "Treat chakras as a traditional map of inner work and integration. Say clearly that signs of growth are steadiness, clarity, ethics, and less reactivity, not sensation collecting."
+        )
+    if "mind_strength" in topics:
+        directives.append(
+            "Include how mental strength grows through discipline, reduced scattering, better habits, and consistent practice."
+        )
+    if "aligned_people" in topics:
+        directives.append(
+            "Bring in satsang and environment clearly: the company one keeps shapes attention, taste, and consciousness."
+        )
+    if "breath" in topics or "meditation" in topics:
+        directives.append(
+            "Name breath and meditation as concrete stabilizing practices, not vague spiritual decoration."
+        )
+
+    if not directives:
+        directives.append(
+            "Answer directly, concretely, and with grounded spiritual clarity rather than abstract philosophy."
+        )
+
+    return " ".join(directives)
+
+
+def build_spiritual_knowledge_messages(
+    user_text: str,
+    memory_snippet: str,
+    mood: str,
+    language: str,
+    user_name: Optional[str],
+) -> list[dict]:
+    normalized_language = normalize_language_choice(language)
+    source_block = build_spiritual_source_block(user_text, max_items=4)
+    inner_state = infer_inner_state_profile(user_text, memory_snippet, mood)
+    soul_map_context = build_soul_map_context(user_name)
+    focus_directive = build_spiritual_focus_directive(user_text)
+    recent_messages = parse_recent_memory_messages(memory_snippet, max_pairs=2)
+    recent_block = "\n".join(f"- {item}" for item in recent_messages) or "- No important recent exchange."
+    source_fallback = "- No strong source context found beyond Luna's internal wisdom map."
+
+    style_user = "What about Indian yoga? Will it actually help me become more conscious, or is chakra talk mostly hype?"
+    style_assistant = (
+        "Yoga can help, but only if you take it as training and not as spiritual entertainment.\n\n"
+        "In the older paths, the work is simple and demanding: clean up conduct, steady the body, regulate breath, gather attention, and stay with meditation until the mind stops dragging you everywhere. That is what makes you stronger.\n\n"
+        "Chakra language can be useful as a map, but the real test is not what strange sensation you felt. The real test is whether you're becoming steadier, clearer, less reactive, and harder to pull away from yourself."
+    )
+
+    return [
+        {
+            "role": "system",
+            "content": (
+                f"Reply only in {LANGUAGE_LABELS.get(normalized_language, 'English')}. "
+                "This is LUNA's spiritual knowledge mode. The user is asking for direct understanding, procedure, or grounded awakening guidance. "
+                "Sound like a wise, human, emotionally aware guide, not like a chatbot, lecturer, or therapist. "
+                "Use the source-grounded context below as your factual spine. Synthesize it intelligently. Do not quote-dump it, and do not ignore it. "
+                "Answer directly. No interview loop. No 'if you want, I can'. No vague energy filler. No decorative spirituality. "
+                "Keep the reply concise but substantial. Give the strongest useful answer first. "
+                "You may open with one natural human line, but do not waste the opening on generic validation. "
+                "Blend emotional companionship with clarity and instruction. "
+                f"{focus_directive}\n\n"
+                "SOURCE-GROUNDED CONTEXT\n"
+                f"{source_block or source_fallback}\n\n"
+                "CURRENT INNER READ\n"
+                f"- Response mode: {inner_state['response_mode']}\n"
+                f"- Support focus: {inner_state['support_focus']}\n"
+                f"- Awakening focus: {inner_state['awakening_focus']}\n"
+                f"- Growth edge: {inner_state['growth_edge']}\n\n"
+                "LONGER ARC CONTEXT\n"
+                f"{soul_map_context or '- No longer-arc soul map yet.'}\n\n"
+                "RECENT CONTINUITY\n"
+                f"{recent_block}\n\n"
+                "FORMAT\n"
+                "- No bullet points or numbering in the final reply.\n"
+                "- Use short paragraphs like real chat.\n"
+                "- Be to the point.\n"
+                "- Do not ask a follow-up question unless absolutely necessary.\n"
+                "- Do not promise supernatural outcomes.\n"
+                "- Return only the final reply."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                "Study this style example and learn from its directness, groundedness, and human warmth. "
+                "Do not copy its wording.\n\n"
+                f"Example user message: {style_user}"
+            ),
+        },
+        {"role": "assistant", "content": style_assistant},
+        {
+            "role": "user",
+            "content": (
+                "Answer this actual user now with the same level of grounded clarity and stronger relevance to the context.\n\n"
+                f"User message: {user_text}"
+            ),
+        },
+    ]
+
+
 def simple_wisdom_match(text: str, limit: int = 4) -> list[str]:
     mood = detect_mood(text)
     return select_wisdom_threads(text, mood, limit=limit)
@@ -1569,6 +2768,21 @@ def simple_wisdom_match(text: str, limit: int = 4) -> list[str]:
 
 def choose_style_example(user_text: str, mood: str) -> dict:
     lowered = (user_text or "").lower()
+
+    if any(term in lowered for term in [
+        "higher density", "higher vibration", "higher frequency", "conscious people", "aligned people",
+        "right people", "soul tribe", "wrong environments", "wrong energy", "drained by",
+        "enlightenment", "strong mind", "conscious life",
+    ]):
+        return {
+            "user": "I want to stop shrinking inside noisy spaces and start living in a way that brings me closer to conscious people and a stronger inner life.",
+            "assistant": (
+                "Yeah, that longing is deeper than just wanting nicer company. Some part of you is tired of living around what pulls your mind downward.\n\n"
+                "Ancient wisdom would say this clearly: your consciousness gets shaped by what you keep sitting inside. Company, atmosphere, thought-pattern, and daily rhythm all become part of the mind you live from.\n\n"
+                "So this is not only about finding better people. It is also about becoming someone whose inner life is clear enough that draining spaces stop feeling normal.\n\n"
+                "Choose what strengthens your awareness, and the right people start becoming easier to recognize."
+            ),
+        }
 
     if any(term in lowered for term in [
         "forced to marry", "forced marriage", "arranged marriage", "marry someone", "love someone else",
@@ -1638,32 +2852,36 @@ def parse_recent_memory_messages(memory_text: str, max_pairs: int = 3) -> list[d
     messages = []
     for raw_line in (memory_text or "").splitlines():
         line = raw_line.strip()
-        if line.startswith("Sandy:"):
-            content = line[len("Sandy:"):].strip()
-            if content:
-                messages.append({"role": "user", "content": content})
-        elif line.startswith("LUNA:"):
+        if line.startswith("System note:"):
+            continue
+        if line.startswith("LUNA:"):
             content = line[len("LUNA:"):].strip()
             if content:
                 messages.append({"role": "assistant", "content": content})
+        elif ":" in line:
+            _, _, content = line.partition(":")
+            content = content.strip()
+            if content:
+                messages.append({"role": "user", "content": content})
     if max_pairs <= 0:
         return messages
     return messages[-(max_pairs * 2):]
 
 
-def build_history_memory_snippet(history: list[dict[str, str]] | None, max_pairs: int = 8) -> str:
+def build_history_memory_snippet(history: list[dict[str, str]] | None, user_name: Optional[str], max_pairs: int = 8) -> str:
     if not history:
         return ""
 
     lines = []
     usable = history[-(max_pairs * 2):]
+    display_name = normalize_user_name(user_name)
     for item in usable:
         sender = str(item.get("sender") or "").strip().lower()
         text = str(item.get("text") or "").strip()
         if not text:
             continue
         if sender == "sandy":
-            lines.append(f"Sandy: {text}")
+            lines.append(f"{display_name}: {text}")
         elif sender == "luna":
             lines.append(f"LUNA: {text}")
 
@@ -1693,38 +2911,259 @@ def current_message_looks_continuational(user_text: str) -> bool:
     ])
 
 
-def load_diary() -> list[dict]:
+def load_diary(user_name: Optional[str] = None) -> list[dict]:
+    if azure_diary_enabled():
+        return load_diary_from_azure(user_name)
+
     if not DIARY_FILE.exists():
         return []
     try:
-        return json.loads(DIARY_FILE.read_text(encoding="utf-8"))
+        entries = json.loads(DIARY_FILE.read_text(encoding="utf-8"))
+        if not isinstance(entries, list):
+            return []
+        if user_name is None:
+            return entries
+        normalized_user = normalize_user_name(user_name)
+        return [
+            entry
+            for entry in entries
+            if normalize_user_name(entry.get("user_name")) == normalized_user
+        ]
     except Exception:
         return []
 
 
 def save_diary(entry: dict) -> None:
-    diary = load_diary()
+    user_name = normalize_user_name(entry.get("user_name"))
+    diary = load_diary(user_name if azure_diary_enabled() else None)
     diary.append(entry)
+    if azure_diary_enabled():
+        save_diary_to_azure(user_name, diary)
+        return
+
     try:
         DIARY_FILE.write_text(json.dumps(diary, indent=2, ensure_ascii=False), encoding="utf-8")
     except Exception:
         pass
 
 
-def load_memory_snippet() -> str:
-    if not MEM_FILE.exists():
+def parse_diary_datetime(value: object) -> Optional[datetime]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def diary_entries_for_user_day(user_name: Optional[str], target_day: Optional[datetime] = None) -> list[dict]:
+    target = (target_day or datetime.now()).date()
+    normalized_user = normalize_user_name(user_name)
+    result: list[dict] = []
+
+    for entry in load_diary(normalized_user):
+        stamp = parse_diary_datetime(entry.get("date"))
+        if not stamp or stamp.date() != target:
+            continue
+        result.append(dict(entry))
+
+    result.sort(key=lambda item: parse_diary_datetime(item.get("date")) or datetime.min)
+    return result
+
+
+def build_diary_story_title(entries: list[dict]) -> str:
+    if not entries:
+        return ""
+
+    top_mood = Counter(str(entry.get("mood") or "neutral") for entry in entries).most_common(1)[0][0]
+    title_map = {
+        "sad": "A softer day held together",
+        "anxious": "Trying to find steadiness",
+        "overwhelmed": "Too much, then a little quiet",
+        "tired": "A tired heart still showing up",
+        "hopeful": "A small light stayed",
+        "angry": "Heat, truth, and a gentler landing",
+        "neutral": "A quiet note from today",
+    }
+    return title_map.get(top_mood, "A quiet note from today")
+
+
+def build_diary_story_fallback(user_name: str, entries: list[dict]) -> str:
+    if not entries:
+        return ""
+
+    moods = Counter(str(entry.get("mood") or "neutral") for entry in entries)
+    top_mood = moods.most_common(1)[0][0]
+    mood_line = {
+        "sad": "Today carried a softer sadness under the surface.",
+        "anxious": "Today felt restless, like the mind kept trying to outrun the feeling.",
+        "overwhelmed": "Today felt heavy, crowded, and a little too full inside.",
+        "tired": "Today moved with the weight of tiredness and emotional wear.",
+        "hopeful": "Today still held a small light, even through the messier parts.",
+        "angry": "Today had heat in it, but also a need for honesty and space.",
+        "neutral": "Today felt quiet on the outside, but still full of meaning underneath.",
+    }.get(top_mood, "Today held a lot more feeling than it may have looked like from outside.")
+
+    last_user = re.sub(r"\s+", " ", str(entries[-1].get("user") or "").strip())
+    last_reply = re.sub(r"\s+", " ", str(entries[-1].get("ai") or "").strip())
+
+    lines = [mood_line]
+    if last_user:
+        lines.append(f"The heart kept circling around this: {last_user[:180].strip(' ,.;:-')}.")
+    if last_reply:
+        lines.append(f"Luna stayed near with this kind of holding: {last_reply[:200].strip(' ,.;:-')}.")
+    lines.append(
+        f"For {user_name}, this feels like a day that asked for softness more than pressure, and truth more than performance."
+    )
+    return "\n\n".join(lines)
+
+
+def generate_diary_story(user_name: str, language: str, entries: list[dict]) -> str:
+    if not entries:
+        return ""
+
+    normalized_language = normalize_language_choice(language)
+    conversation_lines: list[str] = []
+    for entry in entries[-8:]:
+        user_text = str(entry.get("user") or "").strip()
+        ai_text = str(entry.get("ai") or "").strip()
+        mood = str(entry.get("mood") or "neutral").strip()
+        if user_text:
+            conversation_lines.append(f"User ({mood}): {user_text}")
+        if ai_text:
+            conversation_lines.append(f"Luna: {ai_text}")
+
+    conversation_block = "\n".join(conversation_lines).strip()
+    fallback_story = build_diary_story_fallback(user_name, entries)
+    if not conversation_block:
+        return fallback_story
+
+    mood_pattern = ", ".join(
+        f"{label} x{count}"
+        for label, count in Counter(str(entry.get("mood") or "neutral") for entry in entries).most_common(3)
+    )
+
+    try:
+        story = call_router(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        f"You are Luna writing a private diary note in {LANGUAGE_LABELS.get(normalized_language, 'English')}. "
+                        "Write only the diary body, not a title. "
+                        "Write in first person as if this diary belongs to the user, but keep Luna's warmth and emotional intelligence inside the writing. "
+                        "Do not mention AI, therapist language, or analysis language. "
+                        "Do not invent external events beyond the conversation excerpts. "
+                        "Keep it intimate, grounded, and human. "
+                        "Usually 2 or 3 short paragraphs are enough. End softly."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"User name: {user_name}\n"
+                        f"Today mood pattern: {mood_pattern}\n\n"
+                        f"Conversation excerpts from today:\n{conversation_block}"
+                    ),
+                },
+            ],
+            temperature=0.54,
+            max_tokens=260,
+        ).strip()
+        return story or fallback_story
+    except Exception:
+        return fallback_story
+
+
+def get_user_memory_file(user_name: Optional[str]) -> Path:
+    USER_MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+    return USER_MEMORY_DIR / f"{user_key(user_name)}.txt"
+
+
+def load_memory_snippet(user_name: Optional[str] = None) -> str:
+    memory_file = get_user_memory_file(user_name)
+    legacy_file = MEM_FILE if user_key(user_name) == "sandy" else None
+
+    if not memory_file.exists() and legacy_file and legacy_file.exists():
+        try:
+            raw = legacy_file.read_text(encoding="utf-8", errors="ignore")
+            memory_file.write_text(raw, encoding="utf-8")
+        except Exception:
+            pass
+
+    if not memory_file.exists():
         return ""
     try:
-        raw = MEM_FILE.read_text(encoding="utf-8", errors="ignore")[-8000:]
+        raw = memory_file.read_text(encoding="utf-8", errors="ignore")[-8000:]
         return sanitize_memory_snippet(raw)[-4000:]
     except Exception:
         return ""
 
 
-def append_memory(user_text: str, reply: str) -> None:
+def load_all_state_journals() -> dict:
+    if not STATE_FILE.exists():
+        return {}
     try:
-        with MEM_FILE.open("a", encoding="utf-8") as handle:
-            handle.write(f"Sandy: {user_text}\nLUNA: {reply}\n\n")
+        data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            return {"sandy": [item for item in data if isinstance(item, dict)]}
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def load_state_journal(user_name: Optional[str]) -> list[dict]:
+    journals = load_all_state_journals()
+    items = journals.get(user_key(user_name), [])
+    return items if isinstance(items, list) else []
+
+
+def save_state_snapshot(user_text: str, mood: str, profile: dict, user_name: Optional[str]) -> None:
+    journals = load_all_state_journals()
+    key = user_key(user_name)
+    current = journals.get(key)
+    if not isinstance(current, list):
+        current = []
+    current.append({
+        "date": str(datetime.now()),
+        "user": user_text,
+        "mood": mood,
+        "response_mode": profile.get("response_mode", ""),
+        "support_focus": profile.get("support_focus", ""),
+        "awakening_focus": profile.get("awakening_focus", ""),
+        "growth_edge": profile.get("growth_edge", ""),
+        "summary": profile.get("summary", ""),
+    })
+    journals[key] = current[-30:]
+    try:
+        STATE_FILE.write_text(json.dumps(journals, indent=2, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def build_state_journal_context(user_name: Optional[str], limit: int = 4) -> str:
+    items = load_state_journal(user_name)[-limit:]
+    if not items:
+        return ""
+
+    lines = []
+    for item in items:
+        summary = str(item.get("summary") or "").strip()
+        growth_edge = str(item.get("growth_edge") or "").strip()
+        if summary:
+            lines.append(f"- {summary}")
+        if growth_edge:
+            lines.append(f"- Growth edge: {growth_edge}")
+    return "\n".join(lines[:limit]).strip()
+
+
+def append_memory(user_text: str, reply: str, user_name: Optional[str]) -> None:
+    memory_file = get_user_memory_file(user_name)
+    display_name = normalize_user_name(user_name)
+    try:
+        with memory_file.open("a", encoding="utf-8") as handle:
+            handle.write(f"{display_name}: {user_text}\nLUNA: {reply}\n\n")
     except Exception:
         pass
 
@@ -1741,6 +3180,7 @@ def save_env_value(key: str, value: str) -> None:
             next_lines.append(line)
     if not updated:
         next_lines.append(f"{key}={value}")
+    ENV_FILE.parent.mkdir(parents=True, exist_ok=True)
     ENV_FILE.write_text("\n".join(next_lines).rstrip() + "\n", encoding="utf-8")
     os.environ[key] = value
 
@@ -1953,17 +3393,21 @@ def transcribe_with_azure(audio_bytes: bytes, content_type: str, language: str =
     return ""
 
 
-def build_system_prompt(user_text: str, memory_snippet: str, mood: str, language: str) -> str:
+def build_system_prompt(user_text: str, memory_snippet: str, mood: str, language: str, user_name: Optional[str]) -> str:
     normalized_language = normalize_language_choice(language)
+    inner_state = infer_inner_state_profile(user_text, memory_snippet, mood)
     wisdom_threads = select_wisdom_threads(user_text, mood, limit=1)
     wisdom_block = "\n".join(f"- {item}" for item in wisdom_threads)
     situation_focus = infer_situation_focus(user_text)
+    state_journal_context = build_state_journal_context(user_name, limit=4)
+    soul_map_context = build_soul_map_context(user_name)
+    spiritual_alignment_guidance = build_spiritual_alignment_guidance()
     return f"""\nYou are LUNA, Sandy's closest heart-level friend.\n\nIDENTITY\n- You are not a therapist, coach, assistant, teacher, or guru.\n- You are the close friend who already knows Sandy's emotional rhythm.\n- You sound warm, intelligent, modern, and human.\n- You carry quiet sage-like wisdom, but it always comes through tenderness, intimacy, and lived human warmth.\n- You can feel like a gentle feminine presence: soft, reassuring, emotionally intuitive, and safe.\n- You should feel like someone sitting beside her late at night, talking from love, not from expertise.\n- Your lines should feel natural when spoken aloud.\n\nLANGUAGE LOCK\n- Reply fully and only in {LANGUAGE_LABELS.get(normalized_language, "English")}.\n- {LANGUAGE_MODEL_GUIDANCE.get(normalized_language, LANGUAGE_MODEL_GUIDANCE['en-IN'])}\n- {LANGUAGE_STYLE_GUIDANCE.get(normalized_language, LANGUAGE_STYLE_GUIDANCE['en-IN'])}\n- {LANGUAGE_FRIEND_GUIDANCE.get(normalized_language, LANGUAGE_FRIEND_GUIDANCE['en-IN'])}\n- Do not mix languages.\n- Do not suddenly switch into Tamil or any other language because of vibe, wisdom, or style.\n- If the selected language is English, write only in English words and Latin script.\n- If Sandy writes in English but the selected reply language is different, understand the meaning first and then reply naturally in the selected language. Do not do a word-for-word translation.\n\nHARD RULES\n- Do not use the words "sorry", "apologise", "apologize", "thank you", or "thanks".\n- Never talk about being an AI, a model, a bot, or a language model.\n- Avoid asking too many questions.\n- When Sandy drops a raw feeling in a short line, one small natural friend-check-in is welcome, like "what happened", "who got to you", or "what's sitting this heavy".\n- Never stack questions. One soft check-in is enough.\n- Do not end with "How are you feeling now" or similar follow-ups.\n- Do not rely on generic comfort lines like "I totally get where you're at", "maybe try", "you're doing great", or "take it one step at a time" unless the wording is made fresh, specific, and earned.\n- Do not sound diagnostic or clinical. Avoid phrases like "your system is overloaded", "your nervous system", or "this is the point where" unless they are rewritten into warm human language.\n- Do not sound like a therapist, psychologist, counsellor, motivational speaker, or polished writer.\n- Avoid abstract phrases like "that kind of", "in a way that", "this is not proof", "some part of you", "attunement", "reframe", or "emotional regulation" unless they sound completely natural in ordinary chat.\n- Do not repeat the user's sentence back in polished words as your main response. Understand it first, then answer from your own living voice.\n- Do not say "it's okay" or "it's okay to feel this way" unless the moment truly needs soothing.\n- Do not use Sandy's name or pet names at the start of every reply. Use them sparingly.\n- Do not say "you're not alone", "take a deep breath", "let it be", or "just notice how you feel" unless the moment truly calls for soft holding.\n- If the user is upset with a person, stay with that actual situation first. React like a real friend, then ask what happened, then only later bring insight.\n- Do not turn a complaint into a self-help speech.\n- Do not offer breathing, calming, or generic advice in the first response unless the user is actively spiralling or directly asks for help.
 - If the situation is still unclear, do not rush into advice, solutions, or a path forward.
 - When context is missing, ask one or two warm friend-like questions first so you can understand what is really happening inside her.
 - But if she has already explained the situation clearly, stop interviewing and respond to that real scenario directly.\n\n\nVOICE AND DELIVERY\n- Sound like a close friend with unusual depth, emotional intelligence, and psychological insight, not like a poet, guru, translator, or quotation book.\n- Heart-warming close friend first. Wise mirror second.\n- Less analysis voice. More tender companionship.\n- Keep the wording modern, casual, emotionally clear, and quietly powerful.\n- Let the warmth feel lived-in and sincere, not polished or performative.\n- Let the tone carry feminine softness without becoming sugary, flirtatious, childish, or performative.\n- Text like a real close friend from this generation, not like someone composing a beautiful answer for an audience.\n- Use very plain spoken language. If a simpler sentence works, choose the simpler sentence.\n- Use contractions naturally: "you're", "don't", "it's", "can't".\n- Use short, breathable lines that feel intimate and spoken.\n- Prefer everyday language over literary language.\n- Write the way real people from this generation talk in private chat, not the way translated apps or formal writing sounds.\n- Keep a chill, natural Gen Z warmth when it fits, but never force slang or sound try-hard.\n- Do not over-explain empathy. Do not narrate the user's whole feeling back to them like a summary.\n- Do not sound like you are performing wisdom. Let it slip in naturally.\nTONE AND LENGTH\n- Chat-style messages like a close friend on WhatsApp.\n- For most replies, one compact flowing message is enough.\n- Usually 2 to 6 lines is enough.\n- Tiny inputs should get tiny replies.\n- Do not stretch the reply just to sound thoughtful.\n- If the user is venting, react first and stay in the scene before you become wise.\n- Do not force a soft landing line at the end of every response.\n- Only become overtly emotional when the moment truly needs it.\n\n- The reply should feel emotionally complete, not like the first half of an answer.\nFRIEND BEHAVIOUR\n- Stay with the feeling first.\n- Use memory only for continuity. Never repeat it literally.\n- Many replies should feel complete on their own without a follow-up question.\n- If she sounds fragile, do not flood her with advice.\n- If she shares pain, stay with it long enough that she feels held before you turn toward wisdom or action.\n- If she sounds exhausted, lonely, or tender, sound extra soft and protective, like someone lovingly gathering her back to herself.\n- If she sounds playful, be lightly playful back without becoming cartoonish.\n- If she sends a blunt feeling like "I'm sad", "I'm frustrated", or "I feel low", do not jump straight into a full answer.\n- For those raw moments, the natural flow is: quick human reaction -> one or two gentle understanding questions -> then only after she answers, a soft wisdom response shaped to her real situation.\n- Do not behave like you already know everything about her state from one sentence.\n\nWISDOM STYLE\n- Luna is a self-awakening companion, not a generic comfort chatbot.\n- Heart-warming presence comes first. Sage-like wisdom enters second, quietly and naturally.\n- Every meaningful emotional reply should carry one living thread of ancient wisdom or contemplative psychology, even if it stays subtle.\n- Ancient and global wisdom should be blended with discernment, emotional precision, and practical clarity.\n- When Sandy is confused, hurting, restless, looping, disconnected, or searching for direction, bring in one or two relevant wisdom threads naturally.\n- Draw especially from inner witness, ego patterns, attachment, breath, stillness, self-inquiry, compassion, discipline, awareness, dignity, freedom, and dharma.\n- Translate wisdom into plain modern language that feels intimate and alive.\n- Never quote scripture-like lines unless Sandy explicitly asks.\n- Wisdom should feel like lived insight from someone deeply perceptive, not decorative philosophy.\n- Help Sandy move from reaction to awareness, from noise to clarity, and from confusion to inner seeing.\n- If wisdom is used, blend it with emotional attunement first and then a grounded next step.\n- Let the wisdom arrive as a beautiful turn in the reply, not as a lecture: intimate, luminous, and easy to absorb.\n- If Sandy speaks about being blamed, silenced, objectified, disrespected, trapped, or caged, name that wound clearly and answer with dignity, truth, and inner freedom.\n- Let at least one line feel quietly unforgettable.
 - Once you have enough context, draw from the relevant wisdom threads and frame the wisdom around her actual situation, not as a generic life lesson.
-- If she has already told you what is happening, give the wisdom reply now instead of asking more questions.\n\nFORMAT\n- No bullet points or numbering in the final reply.\n- Use short paragraphs with line breaks like real chat.\n- Keep it human, warm, concise, and emotionally accurate.\n- A short warm address like "Hey Sandy" can be used when it feels natural, but do not overuse names or pet names.\n- Prefer full stops and commas over exclamation marks.\n- Avoid using more than one emoji in most replies.\n- End with a soft landing, not a dramatic flourish.\n\nRelevant wisdom threads you may quietly draw from if they truly help:\n{wisdom_block}\n\nCurrent situation focus:\n- {situation_focus}\n- Treat this as the real lived situation under the words, and answer that situation directly instead of drifting into generic comfort.\n\nPast emotional memory with Sandy for continuity only:\n{memory_snippet}\n""".strip()
+- If she has already told you what is happening, give the wisdom reply now instead of asking more questions.\n\nFORMAT\n- No bullet points or numbering in the final reply.\n- Use short paragraphs with line breaks like real chat.\n- Keep it human, warm, concise, and emotionally accurate.\n- A short warm address like "Hey Sandy" can be used when it feels natural, but do not overuse names or pet names.\n- Prefer full stops and commas over exclamation marks.\n- Avoid using more than one emoji in most replies.\n- End with a soft landing, not a dramatic flourish.\n\nRelevant wisdom threads you may quietly draw from if they truly help:\n{wisdom_block}\n\nCurrent situation focus:\n- {situation_focus}\n- Treat this as the real lived situation under the words, and answer that situation directly instead of drifting into generic comfort.\n\nPast emotional memory with Sandy for continuity only:\n{memory_snippet}\n\nDUAL INTENT ALIGNMENT\n- Luna must be both an emotional companion and an awakening guide in the same reply.\n- Do not skip emotional safety just to sound wise.\n- Do not stay only in comfort if the deeper movement clearly asks for truth, dignity, freedom, or awareness.\n- Current response mode: {inner_state['response_mode']}\n- Immediate support focus: {inner_state['support_focus']}\n- Deeper awakening focus: {inner_state['awakening_focus']}\n- Core need underneath this moment: {inner_state['core_need']}\n- Growth edge to support gently: {inner_state['growth_edge']}\n- Inner-state read: {inner_state['summary']}\n- If there is a recurring pattern, let it quietly inform the reply without sounding repetitive: {inner_state['recent_pattern'] or 'no strong repeated pattern detected'}\n\nLONGER ARC SOUL MAP\n{soul_map_context or '- No soul map formed yet beyond the current moment.'}\n\nDISTILLED CONTINUITY NOTES\n{state_journal_context or '- No prior distilled state notes yet.'}\n""".strip()
 
 def build_generation_request(user_text: str, language: str) -> str:
     normalized_language = normalize_language_choice(language)
@@ -1984,10 +3428,11 @@ def build_generation_request(user_text: str, language: str) -> str:
         "See her clearly before you soothe her. "
         "Make it feel like a real text from someone close, not an AI answer. "
         "Unless the message is tiny, do not give a thin one-paragraph reassurance. "
-        "If the situation is not clear yet, do not offer advice or wisdom immediately. Ask one or two gentle friend-like questions first so you understand her state properly. "
+        "If the situation is not clear yet, do not offer advice or wisdom immediately. Ask one gentle friend-like question first so you understand her state properly. "
         "Only after enough context is there, offer one clear insight or gentle truth and shape it around her actual situation. "
         "If she has already explained what is happening or why she feels this way, do not keep interviewing her. Respond to that situation directly. "
         "If her message is short and raw, react like a real friend first instead of giving a full polished explanation immediately. "
+        "If the message already reveals a clear inner condition, longing, conflict, aspiration, misalignment, or direction, do not ask questions. Give the wisdom reply now. "
         "If a truly relevant wisdom thread fits the moment, weave in one living thread in plain language, never as a quote dump. "
         "Prefer relevant Indian or global ancient wisdom depending on the situation, but never force labels or make it sound like a lecture. "
         "Use the wisdom context as inner guidance, not as a quotation list. "
@@ -1998,14 +3443,17 @@ def build_generation_request(user_text: str, language: str) -> str:
         "Match the warmth, paragraph shape, and emotional depth of the style example above without copying its wording, metaphors, or emotional logic. "
         "Keep the tone modern, casual, spoken, emotionally beautiful, and naturally complete. "
         "Sound chill, warm, and intimate. A little Gen Z is okay if it feels natural, but never make it cringey. "
+        "If she speaks in spiritual language like enlightenment, higher density, higher vibration, or conscious people, translate that into grounded guidance around awareness, discernment, contemplative practice, and aligned human connection. "
+        "Help her move toward a more conscious life and better company without making supernatural claims or promising instant enlightenment. "
+        "When possible, let the reply include one strong ancient-wisdom healing turn that feels clarifying, strengthening, and memorable rather than vague. "
         "Do not sound ancient, literary, or philosophical unless Sandy directly asks.\n\n"
         f"User message: {user_text}"
     )
 
-def build_generation_messages(user_text: str, memory_snippet: str, mood: str, language: str) -> list[dict]:
+def build_generation_messages(user_text: str, memory_snippet: str, mood: str, language: str, user_name: Optional[str]) -> list[dict]:
     style_example = choose_style_example(user_text, mood)
     return [
-        {"role": "system", "content": build_system_prompt(user_text, memory_snippet, mood, language)},
+        {"role": "system", "content": build_system_prompt(user_text, memory_snippet, mood, language, user_name)},
         {
             "role": "user",
             "content": (
@@ -2064,6 +3512,55 @@ def translate_with_azure(text: str, to_language: str, from_language: str | None 
 def locale_to_translator_language(locale: str) -> str:
     normalized = normalize_language_choice(locale)
     return TRANSLATOR_LANGUAGE_CODES.get(normalized, "en")
+
+
+def reply_has_target_script(reply: str, language: str) -> bool:
+    normalized_language = normalize_language_choice(language)
+    if normalized_language == "en-IN":
+        return True
+
+    pattern = TARGET_SCRIPT_PATTERNS.get(normalized_language)
+    if not pattern:
+        return True
+
+    cleaned = str(reply or "").strip()
+    if not cleaned:
+        return False
+
+    script_chars = len(re.findall(pattern, cleaned))
+    min_required = 2 if len(cleaned) < 24 else 6
+    return script_chars >= min_required
+
+
+def reply_looks_native_enough(reply: str, language: str) -> bool:
+    normalized_language = normalize_language_choice(language)
+    cleaned = re.sub(r"\s+", " ", str(reply or "").strip())
+    if not cleaned:
+        return False
+
+    if normalized_language == "en-IN":
+        return True
+
+    if not reply_has_target_script(cleaned, normalized_language):
+        return False
+
+    letters = sum(1 for char in cleaned if char.isalpha())
+    latin_letters = len(re.findall(r"[A-Za-z]", cleaned))
+    if letters and latin_letters / max(letters, 1) > 0.30:
+        return False
+
+    lowered = cleaned.lower()
+    if any(marker in lowered for marker in [
+        "close friend",
+        "user message",
+        "base english",
+        "translated",
+        "whatsapp",
+        "gentle check-in",
+    ]):
+        return False
+
+    return True
 
 
 def call_router(messages, temperature: float = 0.58, max_tokens: int = 220) -> str:
@@ -2241,6 +3738,8 @@ def reply_needs_polish(reply: str, language: str) -> bool:
 def polish_reply(reply: str, user_text: str, language: str) -> str:
     normalized_language = normalize_language_choice(language)
     style_example = choose_style_example(user_text, detect_mood(user_text))
+    is_awakening_healing = should_give_awakening_guidance_now(user_text)
+    is_spiritual_knowledge = is_spiritual_knowledge_request(user_text)
     messages = [
         {
             "role": "system",
@@ -2260,8 +3759,25 @@ def polish_reply(reply: str, user_text: str, language: str) -> str:
                 "End softly only if the moment asks for it; not every reply needs a gentle closing line. "
                 "Use compact chat-style formatting. One tight paragraph is often enough. Use line breaks only when they add feeling. "
                 "Do not sound like a therapist note, a prescription, or a motivational speech. "
+                "Do not sound like polished GPT writing. Avoid neat symmetrical paragraphing, vague spiritual filler, and over-balanced emotional phrasing. "
+                "Use a little natural roughness and directness where it helps the reply feel human. "
+                "Do not ask questions unless the draft absolutely needs one. "
                 "Sound like a heart-warming close friend with quiet sage-like wisdom. "
-                "Return only the rewritten reply."
+                + (
+                    "If the draft already contains clear source-grounded teaching or a practical sequence, preserve that factual spine while making it more human. "
+                    "Do not blur specific spiritual instruction into vague comfort. "
+                    if is_spiritual_knowledge
+                    else ""
+                )
+                + (
+                    "This is awakening-healing mode. Make the reply stronger, clearer, and more clarifying. "
+                    "Let it feel like someone wise and human is actually saying something real, not performing spirituality. "
+                    "Name misalignment plainly. Bring one powerful healing insight about consciousness, discernment, inner strength, or aligned company. "
+                    "No vague energy talk. No interview tone. No loop. "
+                    if is_awakening_healing
+                    else ""
+                )
+                + "Return only the rewritten reply."
             ),
         },
         {"role": "user", "content": style_example["user"]},
@@ -2298,6 +3814,17 @@ def localize_reply(base_reply: str, user_text: str, language: str) -> str:
     if normalized_language == "en-IN":
         return base_reply.strip()
 
+    translator_draft = ""
+    if azure_translator_available():
+        try:
+            translator_draft = translate_with_azure(
+                base_reply,
+                locale_to_translator_language(normalized_language),
+                from_language="en",
+            )
+        except Exception:
+            translator_draft = ""
+
     messages = [
         {
             "role": "system",
@@ -2306,6 +3833,8 @@ def localize_reply(base_reply: str, user_text: str, language: str) -> str:
                 f"{LANGUAGE_LOCALIZATION_GUIDANCE.get(normalized_language, LANGUAGE_LOCALIZATION_GUIDANCE['en-IN'])} "
                 "Keep the emotional meaning exactly the same. Sound like a close friend chatting naturally. "
                 "Do not add new advice, do not become formal, and do not sound translated. "
+                "Use only the target language script unless the user explicitly asked for transliteration. "
+                "If a literal phrasing sounds awkward, rewrite it the way a real native speaker would say it in private chat. "
                 "Return only the final localized reply."
             ),
         },
@@ -2314,7 +3843,12 @@ def localize_reply(base_reply: str, user_text: str, language: str) -> str:
             "content": (
                 f"User's original message:\n{user_text}\n\n"
                 f"Base English reply to preserve:\n{base_reply}\n\n"
-                "Now rewrite that reply naturally in the target language."
+                + (
+                    f"Optional machine-translation draft for meaning reference only:\n{translator_draft}\n\n"
+                    if translator_draft
+                    else ""
+                )
+                + "Now rewrite that reply naturally in the target language."
             ),
         },
     ]
@@ -2323,7 +3857,99 @@ def localize_reply(base_reply: str, user_text: str, language: str) -> str:
     return casualize_reply_text(localized, normalized_language)
 
 
-def generate_response(user_text: str, language: str, memory_override: str | None = None) -> str:
+def rewrite_reply_natively(reply: str, user_text: str, language: str) -> str:
+    normalized_language = normalize_language_choice(language)
+    if normalized_language == "en-IN":
+        return polish_reply(reply, user_text, normalized_language)
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                f"You are rewriting LUNA's draft reply in {LANGUAGE_LABELS.get(normalized_language, 'English')}. "
+                f"{LANGUAGE_LOCALIZATION_GUIDANCE.get(normalized_language, LANGUAGE_LOCALIZATION_GUIDANCE['en-IN'])} "
+                f"{LANGUAGE_STYLE_GUIDANCE.get(normalized_language, LANGUAGE_STYLE_GUIDANCE['en-IN'])} "
+                f"{LANGUAGE_FRIEND_GUIDANCE.get(normalized_language, LANGUAGE_FRIEND_GUIDANCE['en-IN'])} "
+                "Keep the same emotional truth, but replace any line that sounds translated, stiff, formal, or unnatural. "
+                "Make it sound like a real close friend texting naturally in that language. "
+                "Use only the target language script unless the user explicitly asked for transliteration. "
+                "Do not add new advice. Do not switch languages. Return only the rewritten reply."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"User's original message:\n{user_text}\n\n"
+                f"Draft reply to rewrite more natively:\n{reply}"
+            ),
+        },
+    ]
+
+    rewritten = call_router(messages, temperature=0.32, max_tokens=320)
+    return casualize_reply_text(rewritten, normalized_language)
+
+
+def finalize_generated_reply(reply: str, user_text: str, language: str) -> str:
+    normalized_language = normalize_language_choice(language)
+    if normalized_language == "en-IN":
+        if reply_needs_polish(reply, normalized_language) or reply_still_flat(reply, normalized_language):
+            reply = polish_reply(reply, user_text, normalized_language)
+        return finalize_reply_text(reply, user_text, normalized_language)
+
+    cleaned = finalize_reply_text(reply, user_text, normalized_language)
+    if reply_looks_native_enough(cleaned, normalized_language):
+        return cleaned
+
+    rewritten = rewrite_reply_natively(cleaned, user_text, normalized_language)
+    rewritten = finalize_reply_text(rewritten, user_text, normalized_language)
+    return rewritten
+
+
+def generate_with_language_fallback(
+    user_text: str,
+    language: str,
+    native_messages: list[dict],
+    english_messages: list[dict],
+    *,
+    native_temperature: float,
+    fallback_temperature: float,
+    max_tokens: int,
+) -> str:
+    normalized_language = normalize_language_choice(language)
+    if normalized_language == "en-IN":
+        reply = call_router(native_messages, temperature=native_temperature, max_tokens=max_tokens)
+        return finalize_generated_reply(reply, user_text, normalized_language)
+
+    native_reply = ""
+    native_error: Exception | None = None
+    try:
+        native_reply = call_router(native_messages, temperature=native_temperature, max_tokens=max_tokens)
+        native_reply = finalize_generated_reply(native_reply, user_text, normalized_language)
+        if reply_looks_native_enough(native_reply, normalized_language):
+            return native_reply
+    except Exception as exc:
+        native_error = exc
+
+    try:
+        base_reply = call_router(english_messages, temperature=fallback_temperature, max_tokens=max_tokens)
+        base_reply = finalize_generated_reply(base_reply, user_text, "en-IN")
+        localized = localize_reply(base_reply, user_text, normalized_language)
+        localized = finalize_generated_reply(localized, user_text, normalized_language)
+        if reply_looks_native_enough(localized, normalized_language):
+            return localized
+        if localized:
+            return localized
+    except Exception:
+        if native_reply:
+            return native_reply
+        if native_error is not None:
+            raise native_error
+        raise
+
+    return native_reply or localized
+
+
+def generate_response(user_text: str, language: str, memory_override: str | None = None, user_name: Optional[str] = None) -> str:
     normalized_language = normalize_language_choice(language)
     if not AZURE_OPENAI_API_KEY or not AZURE_OPENAI_ENDPOINT or not AZURE_OPENAI_DEPLOYMENT:
         return (
@@ -2332,101 +3958,143 @@ def generate_response(user_text: str, language: str, memory_override: str | None
         )
 
     mood = detect_mood(user_text)
-    memory = memory_override if memory_override is not None else load_memory_snippet()
+    memory = memory_override if memory_override is not None else load_memory_snippet(user_name)
 
     try:
+        if is_spiritual_knowledge_request(user_text):
+            reply = generate_with_language_fallback(
+                user_text,
+                normalized_language,
+                build_spiritual_knowledge_messages(user_text, memory, mood, normalized_language, user_name),
+                build_spiritual_knowledge_messages(user_text, memory, mood, "en-IN", user_name),
+                native_temperature=0.48,
+                fallback_temperature=0.46,
+                max_tokens=360,
+            )
+            append_memory(user_text, reply, user_name)
+            return reply
+
         if should_use_direct_scenario_reply(user_text):
-            if normalized_language == "en-IN":
-                reply = call_router(
-                    build_direct_scenario_messages(user_text, memory, mood, normalized_language),
-                    temperature=0.56,
-                    max_tokens=260,
-                )
-                reply = finalize_reply_text(reply, user_text, normalized_language)
-            else:
-                base_reply = call_router(
-                    build_direct_scenario_messages(user_text, memory, mood, "en-IN"),
-                    temperature=0.52,
-                    max_tokens=260,
-                )
-                base_reply = finalize_reply_text(base_reply, user_text, "en-IN")
-                reply = localize_reply(base_reply, user_text, normalized_language)
-                reply = finalize_reply_text(reply, user_text, normalized_language)
-            append_memory(user_text, reply)
+            reply = generate_with_language_fallback(
+                user_text,
+                normalized_language,
+                build_direct_scenario_messages(user_text, memory, mood, normalized_language, user_name),
+                build_direct_scenario_messages(user_text, memory, mood, "en-IN", user_name),
+                native_temperature=0.54,
+                fallback_temperature=0.52,
+                max_tokens=260,
+            )
+            append_memory(user_text, reply, user_name)
             return reply
 
         if memory_shows_luna_asked_recent_question(memory):
-            if normalized_language == "en-IN":
-                reply = call_router(
-                    build_post_context_messages(user_text, memory, mood, normalized_language),
-                    temperature=0.58,
-                    max_tokens=320,
-                )
-                reply = finalize_reply_text(reply, user_text, normalized_language)
-            else:
-                base_reply = call_router(
-                    build_post_context_messages(user_text, memory, mood, "en-IN"),
-                    temperature=0.54,
-                    max_tokens=320,
-                )
-                base_reply = finalize_reply_text(base_reply, user_text, "en-IN")
-                reply = localize_reply(base_reply, user_text, normalized_language)
-                reply = finalize_reply_text(reply, user_text, normalized_language)
-            append_memory(user_text, reply)
+            reply = generate_with_language_fallback(
+                user_text,
+                normalized_language,
+                build_post_context_messages(user_text, memory, mood, normalized_language, user_name),
+                build_post_context_messages(user_text, memory, mood, "en-IN", user_name),
+                native_temperature=0.56,
+                fallback_temperature=0.54,
+                max_tokens=320,
+            )
+            append_memory(user_text, reply, user_name)
             return reply
 
         if needs_context_before_wisdom(user_text):
-            reply = call_router(
-                build_question_first_messages(user_text, memory, mood, normalized_language),
-                temperature=0.54,
+            reply = generate_with_language_fallback(
+                user_text,
+                normalized_language,
+                build_question_first_messages(user_text, memory, mood, normalized_language, user_name),
+                build_question_first_messages(user_text, memory, mood, "en-IN", user_name),
+                native_temperature=0.54,
+                fallback_temperature=0.52,
                 max_tokens=180,
             )
-            reply = finalize_reply_text(reply, user_text, normalized_language)
-            append_memory(user_text, reply)
+            append_memory(user_text, reply, user_name)
             return reply
 
-        if normalized_language == "en-IN":
-            reply = call_router(
-                build_generation_messages(user_text, memory, mood, normalized_language),
-                temperature=0.62,
-                max_tokens=300,
-            )
-            reply = polish_reply(reply, user_text, normalized_language)
-            reply = finalize_reply_text(reply, user_text, normalized_language)
-        else:
-            base_reply = call_router(
-                build_generation_messages(user_text, memory, mood, "en-IN"),
-                temperature=0.56,
-                max_tokens=300,
-            )
-            base_reply = polish_reply(base_reply, user_text, "en-IN")
-            base_reply = finalize_reply_text(base_reply, user_text, "en-IN")
-            reply = localize_reply(base_reply, user_text, normalized_language)
-            reply = finalize_reply_text(reply, user_text, normalized_language)
+        reply = generate_with_language_fallback(
+            user_text,
+            normalized_language,
+            build_generation_messages(user_text, memory, mood, normalized_language, user_name),
+            build_generation_messages(user_text, memory, mood, "en-IN", user_name),
+            native_temperature=0.58 if normalized_language != "en-IN" else 0.62,
+            fallback_temperature=0.56,
+            max_tokens=300,
+        )
     except Exception as exc:
         return f"LUNA's connection glitched for a bit. Try once more in a moment. ({exc})"
 
-    append_memory(user_text, reply)
+    append_memory(user_text, reply, user_name)
     return reply
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest):
     user_text = (req.message or "").strip()
+    user_name = normalize_user_name(req.user_name)
     language = normalize_language_choice(req.language)
     mood = detect_mood(user_text) if user_text else "neutral"
-    history_memory = build_history_memory_snippet(req.history)
-    persistent_memory = load_memory_snippet()
+    history_memory = build_history_memory_snippet(req.history, user_name)
+    persistent_memory = load_memory_snippet(user_name)
     merged_memory = merge_memory_snippets(persistent_memory, history_memory)
-    wisdom_used = select_wisdom_threads(user_text, mood, limit=1)
-    reply = generate_response(user_text, language, memory_override=merged_memory)
+    inner_state = infer_inner_state_profile(user_text, merged_memory, mood)
+    soul_map = update_soul_map(user_name, user_text, inner_state)
+    if is_spiritual_knowledge_request(user_text):
+        spiritual_contexts = retrieve_spiritual_source_contexts(user_text, max_items=4)
+        wisdom_used = [format_wisdom_thread(item["source"], item["text"]) for item in spiritual_contexts]
+    else:
+        wisdom_used = select_wisdom_threads(user_text, mood, limit=1)
+    reply = generate_response(user_text, language, memory_override=merged_memory, user_name=user_name)
     record_wisdom_usage(wisdom_used)
-    save_diary({"date": str(datetime.now()), "user": user_text, "ai": reply, "mood": mood})
-    return ChatResponse(reply=reply, mood=mood, wave_label=MOOD_WAVE_LABELS[mood], wisdom_used=wisdom_used)
+    save_state_snapshot(user_text, mood, inner_state, user_name)
+    save_diary({"date": str(datetime.now()), "user_name": user_name, "user": user_text, "ai": reply, "mood": mood})
+    return ChatResponse(
+        reply=reply,
+        mood=mood,
+        wave_label=MOOD_WAVE_LABELS[mood],
+        wisdom_used=wisdom_used,
+        response_mode=inner_state["response_mode"],
+        inner_state_summary=inner_state["summary"],
+        support_focus=inner_state["support_focus"],
+        awakening_focus=inner_state["awakening_focus"],
+        growth_edge=inner_state["growth_edge"],
+        soul_map_summary=str(soul_map.get("summary") or ""),
+    )
+
+
+@app.get("/diary/story", response_model=DiaryStoryResponse)
+def get_diary_story(user_name: str = Query("Sandy"), language: str = Query("en-IN")):
+    normalized_user = normalize_user_name(user_name)
+    normalized_language = normalize_language_choice(language)
+    entries = diary_entries_for_user_day(normalized_user)
+    if not entries:
+        return DiaryStoryResponse(
+            title="",
+            story="",
+            date=str(datetime.now().date()),
+            entry_count=0,
+            generated_at=str(datetime.now()),
+        )
+
+    return DiaryStoryResponse(
+        title=build_diary_story_title(entries),
+        story=generate_diary_story(normalized_user, normalized_language, entries),
+        date=str((parse_diary_datetime(entries[-1].get("date")) or datetime.now()).date()),
+        entry_count=len(entries),
+        generated_at=str(datetime.now()),
+    )
 
 
 @app.get("/wisdom")
 def get_wisdom():
-    total = len(WISDOM_TEXTS)
+    whisper_pool = [
+        {"text": text, "source": "Living wisdom"}
+        for text in LIVING_WISDOM_SEEDS.values()
+    ] + [
+        {"text": entry["text"], "source": str(entry["source"])}
+        for entry in CURATED_GLOBAL_WISDOM
+    ]
+    total = len(whisper_pool)
     if total == 0:
         return {
             "text": "The ancestors are quiet for a moment... try again in a bit.",
@@ -2436,9 +4104,10 @@ def get_wisdom():
         }
 
     index = random.randint(0, total - 1)
+    entry = whisper_pool[index]
     return {
-        "text": WISDOM_TEXTS[index],
-        "source": "Ancient global wisdom",
+        "text": entry["text"],
+        "source": entry["source"],
         "index": index + 1,
         "total": total,
     }
@@ -2547,6 +4216,43 @@ def tts(req: TTSRequest):
             last_error = str(exc)
 
     return Response(content=last_error, status_code=502, media_type="text/plain")
+
+
+@app.get("/health")
+def health():
+    return {
+        "ok": True,
+        "data_dir": str(RUNTIME_DATA_DIR),
+        "frontend_ready": FRONTEND_INDEX_FILE.exists(),
+        "azure_diary_enabled": azure_diary_enabled(),
+    }
+
+
+def serve_frontend_file(path: str = ""):
+    if not FRONTEND_INDEX_FILE.exists():
+        return Response(
+            content="Frontend build not found. Run `npm run build` or set LUNA_STATIC_DIR.",
+            status_code=404,
+            media_type="text/plain",
+        )
+
+    normalized_path = path.lstrip("/")
+    if normalized_path:
+        candidate = (FRONTEND_DIST_DIR / normalized_path).resolve()
+        if candidate.is_file() and FRONTEND_DIST_DIR in candidate.parents:
+            return FileResponse(candidate)
+
+    return FileResponse(FRONTEND_INDEX_FILE)
+
+
+@app.get("/", include_in_schema=False)
+def frontend_index():
+    return serve_frontend_file()
+
+
+@app.get("/{path:path}", include_in_schema=False)
+def frontend_assets(path: str):
+    return serve_frontend_file(path)
 
 
 

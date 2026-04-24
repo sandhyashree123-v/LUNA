@@ -4,7 +4,20 @@ import * as SpeechSDK from "microsoft-cognitiveservices-speech-sdk";
 import MoonScene from "./MoonScene";
 import "./App.css";
 
-const API_BASE = "http://127.0.0.1:8000";
+const API_BASE = (() => {
+  const configuredBase = import.meta.env.VITE_API_BASE_URL?.trim().replace(/\/+$/, "");
+  if (configuredBase) return configuredBase;
+
+  if (typeof window !== "undefined") {
+    const { hostname, origin } = window.location;
+    if (hostname === "localhost" || hostname === "127.0.0.1") {
+      return "http://127.0.0.1:8000";
+    }
+    return origin.replace(/\/+$/, "");
+  }
+
+  return "http://127.0.0.1:8000";
+})();
 
 const SONOTHERAPY_PROFILES = {
   angry: {
@@ -238,7 +251,7 @@ function toHistoryPayload(messages) {
     }));
 }
 
-function ChatUI({ userName = "You" }) {
+function ChatUI({ userName = "You", embedded = false }) {
   const [messages, setMessages] = useState([
     createMessage("luna", "Hey, I'm here. What's on your mind tonight?"),
   ]);
@@ -281,7 +294,7 @@ function ChatUI({ userName = "You" }) {
   });
   const [selectedInputDeviceId, setSelectedInputDeviceId] = useState("");
 
-  const chatEndRef = useRef(null);
+  const chatScrollRef = useRef(null);
   const bgmRef = useRef(null);
   const ttsRef = useRef(null);
   const fadeRef = useRef(null);
@@ -339,7 +352,13 @@ function ChatUI({ userName = "You" }) {
   }, [selectedLanguage]);
 
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    const container = chatScrollRef.current;
+    if (!container) return;
+
+    container.scrollTo({
+      top: container.scrollHeight,
+      behavior: "smooth",
+    });
   }, [messages, isSending]);
 
   useEffect(() => {
@@ -1256,7 +1275,7 @@ function ChatUI({ userName = "You" }) {
   const activeMoonLine = [...messages].reverse().find((message) => message.sender === "luna")?.text || "";
 
   return (
-    <div className="app-root">
+    <div className={`app-root${embedded ? " app-root-embedded" : ""}`}>
       <div className="luna-layout">
         <div className="left-panel">
           <div className={`moon-card${isSpeaking ? " moon-card-speaking" : ""}`}>
@@ -1359,7 +1378,7 @@ function ChatUI({ userName = "You" }) {
           </header>
 
           <main className="chat-card">
-            <div className="chat-scroll">
+            <div ref={chatScrollRef} className="chat-scroll">
               {messages.map((message) => (
                 <div key={message.id} className={`chat-row ${message.sender === "luna" ? "chat-row-luna" : "chat-row-sandy"}`}>
                   <div className={`chat-message-shell ${message.sender === "luna" ? "chat-message-shell-luna" : "chat-message-shell-sandy"}`}>
@@ -1403,7 +1422,6 @@ function ChatUI({ userName = "You" }) {
                   </div>
                 </div>
               )}
-              <div ref={chatEndRef} />
             </div>
 
             <div className="chat-input-row">

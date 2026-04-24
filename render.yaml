@@ -1,0 +1,50 @@
+services:
+  - type: web
+    name: luna
+    runtime: docker
+    plan: starter
+    autoDeploy: true
+    healthCheckPath: /health
+    disk:
+      name: luna-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: LUNA_DATA_DIR
+        value: /data
+      - key: AZURE_OPENAI_API_KEY
+        sync: false
+      - key: AZURE_OPENAI_ENDPOINT
+        sync: false
+      - key: AZURE_OPENAI_DEPLOYMENT
+        sync: false
+      - key: AZURE_OPENAI_API_VERSION
+        value: 2025-01-01-preview
+      - key: HF_TOKEN
+        sync: false
+      - key: AZURE_SPEECH_KEY
+        sync: false
+      - key: AZURE_SPEECH_REGION
+        sync: false
+      - key: AZURE_SPEECH_VOICE
+        value: en-IN-NeerjaNeural
+      - key: AZURE_TRANSLATOR_KEY
+        sync: false
+      - key: AZURE_TRANSLATOR_REGION
+        sync: false
+      - key: AZURE_TRANSLATOR_ENDPOINT
+        value: https://api.cognitive.microsofttranslator.com
+      - key: USE_AZURE_TRANSLATOR
+        value: "true"
+      - key: ELEVENLABS_API_KEY
+        sync: false
+      - key: ELEVENLABS_VOICE_ID
+        value: 6ZZR4JY6rOriLSDtV54M
+      - key: AZURE_STORAGE_CONNECTION_STRING
+        sync: false
+      - key: AZURE_STORAGE_CONTAINER
+        value: luna-data
+      - key: LUNA_USERNAME
+        sync: false
+      - key: LUNA_PASSWORD
+        sync: false

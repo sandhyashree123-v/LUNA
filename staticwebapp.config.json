@@ -1,0 +1,19 @@
+{
+  "navigationFallback": {
+    "rewrite": "/index.html",
+    "exclude": [
+      "/assets/*",
+      "/tracks/*",
+      "/textures/*",
+      "/*.png",
+      "/*.jpg",
+      "/*.jpeg",
+      "/*.svg",
+      "/*.ico",
+      "/*.mp3",
+      "/*.mp4",
+      "/*.webm",
+      "/*.ogg"
+    ]
+  }
+}

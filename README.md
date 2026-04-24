@@ -1,44 +1,55 @@
-# LUNA UI
+# LUNA
 
-React frontend for the LUNA companion project.
+LUNA is a public-facing companion app with:
 
-## Run
+- a React + Vite frontend at the repo root
+- a FastAPI backend in `InnerVoice_Jelly`
+
+## Local Run
 
 Frontend:
-
-```powershell
-.\run-frontend.cmd
-```
-
-Or manually:
 
 ```powershell
 npm.cmd install
 npm.cmd run dev
 ```
 
-The UI runs on `http://127.0.0.1:5173`.
-
-## Backend Pairing
-
-This frontend expects the FastAPI backend from:
-
-`C:\Users\sandh\OneDrive\Desktop\Projects\InnerVoice_Jelly`
-
-Start it with:
+Backend:
 
 ```powershell
-.\run-backend.cmd
+cd .\InnerVoice_Jelly
+python -m pip install -r requirements.txt
+python -m uvicorn backend:app --reload --host 127.0.0.1 --port 8000
 ```
 
-That backend serves:
+The frontend runs on `http://127.0.0.1:5173` and talks to the backend on `http://127.0.0.1:8000`.
 
-- `POST /chat`
-- `POST /tts`
-- `GET /wisdom`
+## Public Deployment
 
-## Notes
+This repo now includes a root `Dockerfile` that:
 
-- Background music is served from `public/tracks`.
-- The moon texture is served from `public/textures`.
-- The login password is still local UI gating in `src/LoginScreen.jsx`.
+- builds the Vite frontend
+- packages it into the Python container
+- serves both the UI and API from one public URL
+
+The backend also exposes `GET /health` for hosting checks.
+
+## Persistent Diary Storage
+
+Diary entries can now persist in Azure Blob Storage per user account when these backend env vars are set:
+
+```env
+AZURE_STORAGE_CONNECTION_STRING=...
+AZURE_STORAGE_CONTAINER=luna-data
+```
+
+If those vars are missing, the backend falls back to local files.
+
+## Azure
+
+For an Azure student subscription, the cleanest setup is:
+
+- Azure Container Apps for the public app
+- Azure Storage Account (Blob Storage) for diary persistence
+
+Detailed steps are in [AZURE_DEPLOY.md](/c:/Users/sandh/luna-ui/AZURE_DEPLOY.md).

@@ -39,3 +39,9 @@ __pycache__/
 # Backend local runtime dirs
 InnerVoice_Jelly/venv/
 InnerVoice_Jelly/archive/
+
+# Local generated runtime/test artifacts
+InnerVoice_Jelly/luna_soul_map.json
+InnerVoice_Jelly/luna_state.json
+InnerVoice_Jelly/luna_user_memory/
+tmp_luna_test.*
