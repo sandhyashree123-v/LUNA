@@ -6,12 +6,18 @@
     <title>LUNA QR Poster</title>
     <style>
       :root {
-        --bg: #f4efe5;
-        --card: #fffaf0;
-        --ink: #1f2a37;
-        --muted: #6b7280;
-        --accent: #149ad6;
-        --accent-soft: #d9f0fb;
+        --bg-main: #040613;
+        --bg-card: rgba(11, 15, 32, 0.97);
+        --bg-card-elevated: rgba(14, 20, 44, 0.95);
+        --border-soft: rgba(135, 152, 191, 0.46);
+        --border-subtle: rgba(145, 163, 215, 0.18);
+        --accent: #7c8dff;
+        --accent-soft: #a6b3ff;
+        --accent-cyan: #79dfff;
+        --accent-mix: linear-gradient(135deg, #79dfff, #9ea7ff);
+        --text-main: #f5f4ff;
+        --text-muted: #b3bddb;
+        --shadow-soft: 0 24px 70px rgba(0, 0, 0, 0.55);
       }
 
       * {
@@ -25,33 +31,59 @@
         place-items: center;
         padding: 24px;
         background:
-          radial-gradient(circle at top left, rgba(20, 154, 214, 0.18), transparent 34%),
-          radial-gradient(circle at bottom right, rgba(31, 42, 55, 0.1), transparent 32%),
-          linear-gradient(135deg, var(--bg), #fbf7ee);
-        color: var(--ink);
-        font-family: Georgia, "Times New Roman", serif;
+          radial-gradient(circle at top, rgba(58, 72, 148, 0.28), transparent 28%),
+          radial-gradient(circle at bottom left, rgba(77, 165, 255, 0.1), transparent 24%),
+          linear-gradient(180deg, #0a0d1f 0%, #040613 50%, #030510 100%);
+        color: var(--text-main);
+        font-family: "Segoe UI Variable Text", "SF Pro Text", "Inter", system-ui, sans-serif;
       }
 
       .poster {
         width: min(100%, 860px);
-        background: linear-gradient(180deg, rgba(255, 250, 240, 0.98), rgba(255, 255, 255, 0.96));
-        border: 1px solid rgba(31, 42, 55, 0.08);
+        background:
+          linear-gradient(180deg, rgba(10, 14, 31, 0.95), rgba(7, 10, 24, 0.98)),
+          radial-gradient(circle at top, rgba(124, 141, 255, 0.08), transparent 32%);
+        border: 1px solid var(--border-soft);
         border-radius: 28px;
-        box-shadow: 0 24px 80px rgba(31, 42, 55, 0.14);
+        box-shadow: var(--shadow-soft);
         overflow: hidden;
+        position: relative;
+      }
+
+      .poster::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background:
+          radial-gradient(circle at 18% 18%, rgba(121, 223, 255, 0.09), transparent 22%),
+          radial-gradient(circle at 82% 22%, rgba(158, 167, 255, 0.1), transparent 24%),
+          radial-gradient(circle at 70% 78%, rgba(121, 223, 255, 0.05), transparent 26%);
       }
 
       .hero {
         padding: 36px 36px 24px;
         background:
-          linear-gradient(140deg, rgba(20, 154, 214, 0.12), rgba(20, 154, 214, 0.02)),
-          linear-gradient(180deg, rgba(255, 255, 255, 0.7), rgba(255, 255, 255, 0.95));
+          radial-gradient(circle at top left, rgba(127, 156, 255, 0.16), transparent 42%),
+          linear-gradient(180deg, rgba(12, 16, 36, 0.96), rgba(7, 11, 25, 0.94));
+        position: relative;
+      }
+
+      .hero::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background:
+          radial-gradient(circle at 50% 18%, rgba(255, 255, 255, 0.04), transparent 18%),
+          radial-gradient(circle at 20% 72%, rgba(124, 141, 255, 0.1), transparent 16%),
+          radial-gradient(circle at 82% 68%, rgba(119, 224, 255, 0.08), transparent 14%);
       }
 
       .eyebrow {
         margin: 0 0 10px;
-        color: var(--accent);
-        font: 600 14px/1.2 system-ui, sans-serif;
+        color: rgba(134, 219, 255, 0.84);
+        font: 600 14px/1.2 "Segoe UI Variable Text", "SF Pro Text", "Inter", system-ui, sans-serif;
         letter-spacing: 0.18em;
         text-transform: uppercase;
       }
@@ -61,13 +93,15 @@
         font-size: clamp(42px, 7vw, 78px);
         line-height: 0.96;
         letter-spacing: -0.04em;
+        color: var(--text-main);
+        font-family: "Iowan Old Style", Georgia, "Times New Roman", serif;
       }
 
       .sub {
         margin: 16px 0 0;
         max-width: 580px;
-        color: var(--muted);
-        font: 500 18px/1.6 system-ui, sans-serif;
+        color: rgba(214, 222, 245, 0.72);
+        font: 500 18px/1.6 "Segoe UI Variable Text", "SF Pro Text", "Inter", system-ui, sans-serif;
       }
 
       .content {
@@ -82,8 +116,11 @@
         place-items: center;
         padding: 22px;
         border-radius: 24px;
-        background: linear-gradient(180deg, #ffffff, var(--accent-soft));
-        border: 1px solid rgba(20, 154, 214, 0.14);
+        border: 1px solid rgba(126, 220, 255, 0.14);
+        background:
+          linear-gradient(180deg, rgba(10, 14, 31, 0.95), rgba(7, 10, 24, 0.98)),
+          radial-gradient(circle at top, rgba(124, 141, 255, 0.08), transparent 32%);
+        box-shadow: inset 0 0 0 1px rgba(145, 163, 215, 0.04);
       }
 
       .qr-wrap img {
@@ -92,8 +129,8 @@
         height: auto;
         display: block;
         border-radius: 18px;
-        background: #fff;
-        box-shadow: 0 16px 34px rgba(31, 42, 55, 0.12);
+        background: #f5f4ff;
+        box-shadow: 0 20px 38px rgba(49, 72, 154, 0.38);
       }
 
       .info {
@@ -107,22 +144,23 @@
         width: fit-content;
         padding: 9px 14px;
         border-radius: 999px;
-        background: rgba(20, 154, 214, 0.12);
-        color: #0a6d9a;
-        font: 600 14px/1.2 system-ui, sans-serif;
+        background: rgba(121, 223, 255, 0.12);
+        border: 1px solid rgba(121, 223, 255, 0.24);
+        color: rgba(174, 235, 255, 0.92);
+        font: 600 14px/1.2 "Segoe UI Variable Text", "SF Pro Text", "Inter", system-ui, sans-serif;
       }
 
       .url {
         margin: 0;
         word-break: break-word;
-        color: var(--ink);
-        font: 600 17px/1.6 system-ui, sans-serif;
+        color: #eef3ff;
+        font: 600 17px/1.6 "Segoe UI Variable Text", "SF Pro Text", "Inter", system-ui, sans-serif;
       }
 
       .hint {
         margin: 0;
-        color: var(--muted);
-        font: 500 16px/1.6 system-ui, sans-serif;
+        color: rgba(210, 220, 245, 0.7);
+        font: 500 16px/1.6 "Segoe UI Variable Text", "SF Pro Text", "Inter", system-ui, sans-serif;
       }
 
       .actions {
@@ -140,17 +178,19 @@
         text-decoration: none;
         padding: 12px 18px;
         border-radius: 999px;
-        font: 600 15px/1.2 system-ui, sans-serif;
+        font: 600 15px/1.2 "Segoe UI Variable Text", "SF Pro Text", "Inter", system-ui, sans-serif;
       }
 
       .primary {
-        background: var(--ink);
-        color: #fff;
+        background: var(--accent-mix);
+        color: #07111f;
+        box-shadow: 0 16px 32px rgba(109, 180, 255, 0.18);
       }
 
       .secondary {
-        background: rgba(31, 42, 55, 0.08);
-        color: var(--ink);
+        border: 1px solid rgba(145, 163, 215, 0.18);
+        background: rgba(13, 18, 39, 0.9);
+        color: #eef3ff;
       }
 
       @media (max-width: 720px) {
