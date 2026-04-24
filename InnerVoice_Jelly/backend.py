@@ -96,6 +96,7 @@ AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY", "")
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT", "").rstrip("/")
 AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "")
 AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2025-01-01-preview")
+AZURE_OPENAI_MAX_TOKEN_FIELD = os.getenv("AZURE_OPENAI_MAX_TOKEN_FIELD", "auto").strip().lower()
 HF_TOKEN = os.getenv("HF_TOKEN", "")
 AZURE_SPEECH_KEY = os.getenv("AZURE_SPEECH_KEY", "")
 AZURE_SPEECH_REGION = os.getenv("AZURE_SPEECH_REGION", "")
@@ -116,6 +117,9 @@ FRONTEND_ORIGINS = parse_csv_env(
 request_session = requests.Session()
 HF_API_URL = "https://router.huggingface.co/v1/chat/completions"
 HF_MODEL_ID = "Qwen/Qwen2.5-7B-Instruct"
+
+if AZURE_OPENAI_MAX_TOKEN_FIELD not in {"auto", "max_tokens", "max_completion_tokens"}:
+    AZURE_OPENAI_MAX_TOKEN_FIELD = "auto"
 
 MOOD_VOICE_SETTINGS = {
     "sad": {"stability": 0.62, "similarity_boost": 0.82, "style": 0.12, "use_speaker_boost": True},
@@ -3563,27 +3567,71 @@ def reply_looks_native_enough(reply: str, language: str) -> bool:
     return True
 
 
+def get_azure_openai_token_field() -> str:
+    return "max_completion_tokens" if AZURE_OPENAI_MAX_TOKEN_FIELD == "auto" else AZURE_OPENAI_MAX_TOKEN_FIELD
+
+
+def detect_azure_openai_token_field_override(error_text: str, attempted_field: str) -> str | None:
+    lowered = str(error_text or "").lower()
+    if attempted_field == "max_tokens":
+        if "unsupported parameter" in lowered and "max_tokens" in lowered and "max_completion_tokens" in lowered:
+            return "max_completion_tokens"
+        if "max_tokens is not supported with this model" in lowered:
+            return "max_completion_tokens"
+        if "use 'max_completion_tokens' instead" in lowered or 'use "max_completion_tokens" instead' in lowered:
+            return "max_completion_tokens"
+    if attempted_field == "max_completion_tokens":
+        if "unrecognized request argument supplied: max_completion_tokens" in lowered:
+            return "max_tokens"
+        if "unknown parameter: 'max_completion_tokens'" in lowered or 'unknown parameter: "max_completion_tokens"' in lowered:
+            return "max_tokens"
+        if "unsupported parameter" in lowered and "max_completion_tokens" in lowered and "max_tokens" in lowered:
+            return "max_tokens"
+    return None
+
+
+def summarize_generation_error(exc: Exception) -> str:
+    message = str(exc or "").strip()
+    lowered = message.lower()
+    if "content management policy" in lowered or "content_filter" in lowered or "filtered" in lowered:
+        return "LUNA had to soften that reply before sending it. Try asking again in a gentler way."
+    if "azure openai is not configured" in lowered:
+        return "LUNA's reply service isn't configured on the backend yet."
+    return "LUNA's connection glitched for a bit. Try once more in a moment."
+
+
 def call_router(messages, temperature: float = 0.58, max_tokens: int = 220) -> str:
+    global AZURE_OPENAI_MAX_TOKEN_FIELD
+
     if not AZURE_OPENAI_API_KEY or not AZURE_OPENAI_ENDPOINT or not AZURE_OPENAI_DEPLOYMENT:
         raise RuntimeError("Azure OpenAI is not configured")
 
     def _post(payload_messages, payload_temperature, payload_max_tokens):
-        payload = {
-            "messages": payload_messages,
-            "temperature": payload_temperature,
-            "top_p": 0.82,
-            "max_tokens": payload_max_tokens,
-        }
-        return request_session.post(
-            f"{AZURE_OPENAI_ENDPOINT}/openai/deployments/{AZURE_OPENAI_DEPLOYMENT}/chat/completions",
-            params={"api-version": AZURE_OPENAI_API_VERSION},
-            headers={
-                "api-key": AZURE_OPENAI_API_KEY,
-                "Content-Type": "application/json",
-            },
-            json=payload,
-            timeout=60,
-        )
+        def _send(token_field: str):
+            payload = {
+                "messages": payload_messages,
+                "temperature": payload_temperature,
+                "top_p": 0.82,
+                token_field: payload_max_tokens,
+            }
+            return request_session.post(
+                f"{AZURE_OPENAI_ENDPOINT}/openai/deployments/{AZURE_OPENAI_DEPLOYMENT}/chat/completions",
+                params={"api-version": AZURE_OPENAI_API_VERSION},
+                headers={
+                    "api-key": AZURE_OPENAI_API_KEY,
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=60,
+            )
+
+        token_field = get_azure_openai_token_field()
+        response = _send(token_field)
+        override_field = detect_azure_openai_token_field_override(response.text, token_field)
+        if response.status_code == 400 and override_field and override_field != token_field:
+            AZURE_OPENAI_MAX_TOKEN_FIELD = override_field
+            response = _send(override_field)
+        return response
 
     def _compact_messages(raw_messages):
         compact = []
@@ -4023,7 +4071,8 @@ def generate_response(user_text: str, language: str, memory_override: str | None
             max_tokens=300,
         )
     except Exception as exc:
-        return f"LUNA's connection glitched for a bit. Try once more in a moment. ({exc})"
+        print(f"[LUNA] generate_response failed: {exc}")
+        return summarize_generation_error(exc)
 
     append_memory(user_text, reply, user_name)
     return reply

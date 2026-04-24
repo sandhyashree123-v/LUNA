@@ -82,6 +82,7 @@ const MOOD_MAP = {
 };
 
 const VOICE_PREVIEW_TEXT = "Hey, I'm here. Take this softly. We can move gently tonight.";
+const CLEAN_LUNA_RETRY_MESSAGE = "LUNA's connection glitched for a bit. Try once more in a moment.";
 
 const LANGUAGE_OPTIONS = [
   { code: "en-IN", label: "English" },
@@ -227,6 +228,27 @@ function personalizeLunaText(raw, userName) {
     .replace(/\bSandy's\b/gi, `${safeName}'s`);
 }
 
+function sanitizeLunaReplyText(raw) {
+  const text = String(raw ?? "").trim();
+  if (!text) return text;
+
+  const lowered = text.toLowerCase();
+  const looksLikeProviderError = (
+    lowered.includes("unsupported parameter")
+    || lowered.includes("invalid_request_error")
+    || lowered.includes("content management policy")
+    || lowered.includes("luna couldn't reach her azure brain")
+    || lowered.includes("azure openai is missing on the backend")
+    || (lowered.includes("max_completion_tokens") && lowered.includes("max_tokens"))
+  );
+
+  if ((lowered.startsWith("luna's connection glitched for a bit.") && text.includes("(")) || looksLikeProviderError) {
+    return CLEAN_LUNA_RETRY_MESSAGE;
+  }
+
+  return text;
+}
+
 function createConversationStorageKey(userName) {
   const normalized = String(userName || "you").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-");
   return `luna_chat_history:${normalized || "you"}`;
@@ -236,7 +258,7 @@ function createMessage(sender, text, extras = {}) {
   return {
     id: extras.id || `${sender}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     sender,
-    text,
+    text: sender === "luna" ? sanitizeLunaReplyText(text) : text,
     wisdomUsed: Array.isArray(extras.wisdomUsed) ? extras.wisdomUsed : [],
   };
 }
