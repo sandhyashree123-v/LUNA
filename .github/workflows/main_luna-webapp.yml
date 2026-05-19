@@ -1,4 +1,4 @@
-name: Build and deploy Python app to Azure Web App - luna-final-app
+name: Build and deploy Python app to Azure Web App - luna-webapp
 
 on:
   push:
@@ -84,7 +84,7 @@ jobs:
         id: deploy-to-webapp
         uses: azure/webapps-deploy@v3
         with:
-          app-name: 'luna-final-app'
+          app-name: 'luna-webapp'
           slot-name: 'Production'
           package: luna-deploy.zip
           startup-command: 'sh InnerVoice_Jelly/startup.sh'
