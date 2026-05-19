@@ -2,6 +2,7 @@
 import React, { Component, useEffect, useState } from "react";
 import ChatUI from "./ChatUI";
 import DiaryTab from "./DiaryTab";
+import XaiDashboard from "./XaiDashboard";
 import "./App.css";
 
 const PROFILE_STORAGE_KEY = "luna_profile";
@@ -78,6 +79,32 @@ function saveAccounts(accounts) {
 
 function clearSavedProfile() {
   window.localStorage.removeItem(PROFILE_STORAGE_KEY);
+}
+
+function HomeActionIcon({ type }) {
+  if (type === "diary") {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true" className="home-action-svg">
+        <path className="home-action-glow" d="M7.8 4.4h7.8c1.3 0 2.4 1.1 2.4 2.4v12.7H8.6A2.6 2.6 0 0 1 6 16.9V6.2c0-1 .8-1.8 1.8-1.8Z" />
+        <path d="M8 4.8h7.6c1.1 0 2 .9 2 2v12.3H8.5A2.1 2.1 0 0 1 6.4 17V6.4c0-.9.7-1.6 1.6-1.6Z" />
+        <path d="M8.5 19.1A2.1 2.1 0 0 1 6.4 17c0-1.2.9-2.1 2.1-2.1h9.1" />
+        <path d="M9.8 8.4h4.9M9.8 11.1h3.7" />
+        <path className="home-action-accent" d="M15.4 4.9v9.8" />
+      </svg>
+    );
+  }
+
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className="home-action-svg">
+      <path className="home-action-glow" d="M5.2 5.2h13.6v13.6H5.2z" />
+      <path d="M5.8 18.2h12.4" />
+      <path d="M7.6 15.4V10" />
+      <path d="M12 15.4V6.8" />
+      <path d="M16.4 15.4V8.7" />
+      <path d="M6.1 5.8h11.8v11.8H6.1z" />
+      <path className="home-action-accent" d="M8 8.3h2.1M13.9 8.3h2.1" />
+    </svg>
+  );
 }
 
 class ChatErrorBoundary extends Component {
@@ -383,8 +410,25 @@ export default function App() {
                     ? "Sign in & begin"
                     : "Begin with Luna"}
               </button>
-              <button type="button" className="minimal-home-cta minimal-home-cta-secondary" onClick={() => setActiveTab("diary")}>
-                Open diary
+              <button
+                type="button"
+                className="minimal-home-icon-button"
+                onClick={() => setActiveTab("diary")}
+                aria-label="Open diary"
+                title="Open diary"
+              >
+                <HomeActionIcon type="diary" />
+                <span className="minimal-home-icon-label">Diary</span>
+              </button>
+              <button
+                type="button"
+                className="minimal-home-icon-button"
+                onClick={() => setActiveTab("monitoring")}
+                aria-label="Open monitoring"
+                title="Monitoring"
+              >
+                <HomeActionIcon type="monitoring" />
+                <span className="minimal-home-icon-label">Insight</span>
               </button>
             </div>
 
@@ -431,6 +475,12 @@ export default function App() {
               selectedAccountName={diaryAccount?.name || ""}
               onAccountChange={setDiaryAccountName}
             />
+          </section>
+        )}
+
+        {activeTab === "monitoring" && (
+          <section className="site-content-panel xai-content-panel">
+            <XaiDashboard userName={diaryUserName} accounts={accountChoices} />
           </section>
         )}
       </main>

@@ -257,6 +257,19 @@ function sanitizeLunaReplyText(raw) {
   return text;
 }
 
+function formatWisdomForDisplay(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return "";
+
+  return text
+    .replace(/^\[[^\]]+\]\s*/, "")
+    .replace(/^The\s+[^.]{0,80}?\s+thread\s+here\s+is\s+that\s+/i, "")
+    .replace(/^In essence,\s*/i, "")
+    .replace(/^Indeed,\s*/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function createConversationStorageKey(userName) {
   const normalized = String(userName || "you").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-");
   return `luna_chat_history:${normalized || "you"}`;
@@ -1663,9 +1676,9 @@ function ChatUI({ userName = "You", embedded = false }) {
                     </div>
                     {message.wisdomUsed?.length > 0 && (
                       <div className={`bubble-face bubble-face-wisdom${openWisdomMessageId === message.id ? " bubble-face-visible" : ""}`}>
-                        <div className="wisdom-inline-kicker">Wisdom thread</div>
+                        <div className="wisdom-inline-kicker">Wisdom Luna used</div>
                         {message.wisdomUsed.map((thread) => (
-                          <div key={thread} className="wisdom-inline-line">{thread}</div>
+                          <div key={thread} className="wisdom-inline-line">{formatWisdomForDisplay(thread)}</div>
                         ))}
                       </div>
                     )}
@@ -1712,11 +1725,13 @@ function ChatUI({ userName = "You", embedded = false }) {
               />
               <button
                 type="button"
-                className="chat-send-btn"
-                onClick={handleSend}
-                disabled={isSending || !input.trim()}
+                className={`chat-send-btn${isSpeaking ? " chat-send-btn-speaking" : ""}`}
+                onClick={isSpeaking ? stopSpeaking : handleSend}
+                disabled={!isSpeaking && (isSending || !input.trim())}
+                aria-label={isSpeaking ? "Stop Luna voice" : "Send message"}
+                title={isSpeaking ? "Stop Luna voice" : "Send message"}
               >
-                {isSending ? "..." : "Send"}
+                {isSpeaking || isSending ? "..." : "Send"}
               </button>
             </div>
           </main>
